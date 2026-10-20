@@ -62,5 +62,5 @@ async def on_command_error(interaction: discord.Interaction, error: app_commands
         else:
             await interaction.followup.send("❌ You do not have permission to use this command.", ephemeral=True)
 
-# Replace with your actual bot token
-bot.run("YOUR_BOT_TOKEN")
+
+bot.run(os.environ.get("DISCORD_TOKEN"))
