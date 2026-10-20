@@ -54,7 +54,7 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
-# ==================== SETUP COMMANDS ====================
+# ==================== SETUP & REMOVE COMMANDS ====================
 
 @bot.tree.command(name="setwelcome", description="Choose the channel for welcome messages")
 @app_commands.checks.has_permissions(manage_channels=True)
@@ -67,6 +67,41 @@ async def setwelcome(interaction: discord.Interaction, channel: discord.TextChan
     save_json(CONFIG_FILE, data)
     await interaction.response.send_message(f"✅ Welcome channel set to {channel.mention}", ephemeral=True)
 
+@bot.tree.command(name="removewelcome", description="Disable and remove the welcome channel")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def removewelcome(interaction: discord.Interaction):
+    data = load_json(CONFIG_FILE)
+    str_guild_id = str(interaction.guild_id)
+    if str_guild_id in data and "welcome_channel" in data[str_guild_id]:
+        del data[str_guild_id]["welcome_channel"]
+        save_json(CONFIG_FILE, data)
+        await interaction.response.send_message("✅ Welcome messages have been disabled.", ephemeral=True)
+    else:
+        await interaction.response.send_message("⚠️ No welcome channel is currently set.", ephemeral=True)
+
+@bot.tree.command(name="setleave", description="Choose the channel for leave messages")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def setleave(interaction: discord.Interaction, channel: discord.TextChannel):
+    data = load_json(CONFIG_FILE)
+    str_guild_id = str(interaction.guild_id)
+    if str_guild_id not in data:
+        data[str_guild_id] = {}
+    data[str_guild_id]["leave_channel"] = channel.id
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"✅ Leave channel set to {channel.mention}", ephemeral=True)
+
+@bot.tree.command(name="removeleave", description="Disable and remove the leave channel")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def removeleave(interaction: discord.Interaction):
+    data = load_json(CONFIG_FILE)
+    str_guild_id = str(interaction.guild_id)
+    if str_guild_id in data and "leave_channel" in data[str_guild_id]:
+        del data[str_guild_id]["leave_channel"]
+        save_json(CONFIG_FILE, data)
+        await interaction.response.send_message("✅ Leave messages have been disabled.", ephemeral=True)
+    else:
+        await interaction.response.send_message("⚠️ No leave channel is currently set.", ephemeral=True)
+
 @bot.tree.command(name="setlevel", description="Choose the channel for level-up announcements")
 @app_commands.checks.has_permissions(manage_channels=True)
 async def setlevel(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -78,7 +113,7 @@ async def setlevel(interaction: discord.Interaction, channel: discord.TextChanne
     save_json(CONFIG_FILE, data)
     await interaction.response.send_message(f"✅ Level-up channel set to {channel.mention}", ephemeral=True)
 
-# ==================== EVENTS (Welcome & Levels) ====================
+# ==================== EVENTS (Welcome, Leave & Levels) ====================
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -91,11 +126,20 @@ async def on_member_join(member: discord.Member):
             await channel.send(f"👋 Welcome to the server, {member.mention}! We're glad to have you here.")
 
 @bot.event
+async def on_member_remove(member: discord.Member):
+    data = load_json(CONFIG_FILE)
+    str_guild_id = str(member.guild.id)
+    if str_guild_id in data and "leave_channel" in data[str_guild_id]:
+        channel_id = data[str_guild_id]["leave_channel"]
+        channel = member.guild.get_channel(channel_id)
+        if channel:
+            await channel.send(f"👋 **{member.name}** has left the server.")
+
+@bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    # Basic Leveling System (Gives XP per message)
     levels_data = load_json(LEVELS_FILE)
     guild_id = str(message.guild.id)
     user_id = str(message.author.id)
@@ -105,17 +149,14 @@ async def on_message(message: discord.Message):
     if user_id not in levels_data[guild_id]:
         levels_data[guild_id][user_id] = {"xp": 0, "level": 1}
 
-    # Add XP
     user_data = levels_data[guild_id][user_id]
     user_data["xp"] += 10
     
-    # Level up threshold formula: Level * 100 XP required for next level
     next_level_xp = user_data["level"] * 100
     if user_data["xp"] >= next_level_xp:
         user_data["level"] += 1
-        user_data["xp"] = 0 # Reset XP for next level
+        user_data["xp"] = 0
         
-        # Send level up message in the chosen level channel (or current channel if not set)
         config_data = load_json(CONFIG_FILE)
         announcement_channel = message.channel
         if guild_id in config_data and "level_channel" in config_data[guild_id]:
@@ -193,6 +234,9 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
 @untimeout.error
 @warn.error
 @setwelcome.error
+@removewelcome.error
+@setleave.error
+@removeleave.error
 @setlevel.error
 async def on_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
