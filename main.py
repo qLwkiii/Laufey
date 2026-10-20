@@ -4,9 +4,10 @@ from discord.ext import commands
 import datetime
 import os
 import json
+import urllib.parse
+import aiohttp
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
-import mtranslate
 
 # --- Tiny Web Server to satisfy Render's port requirement ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -28,6 +29,14 @@ intents.members = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Language mapping helper
+LANGUAGES = {
+    "french": "fr", "spanish": "es", "japanese": "ja", "german": "de",
+    "italian": "it", "korean": "ko", "chinese": "zh-CN", "russian": "ru",
+    "portuguese": "pt", "hindi": "hi", "arabic": "ar", "english": "en",
+    "dutch": "nl", "polish": "pl", "turkish": "tr", "vietnamese": "vi"
+}
 
 # --- Configuration Storage (channels.json & levels.json) ---
 CONFIG_FILE = "channels.json"
@@ -59,19 +68,31 @@ async def on_ready():
 
 @bot.command(name="translate")
 async def translate_prefix(ctx, language: str, *, text: str):
-    """Usage: !translate spanish hello how are you"""
+    """Usage: !translate french hello"""
+    target_lang = LANGUAGES.get(language.lower(), language.lower())
+    
+    url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={target_lang}&dt=t&q={urllib.parse.quote(text)}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    }
+
     try:
-        # mtranslate translate function: translate(to_translate, to_language, from_language)
-        translated_text = mtranslate.translate(text, language.lower(), "auto")
-        
-        embed = discord.Embed(title="🌐 Translation Result", color=discord.Color.blue())
-        embed.add_field(name="Original Text", value=text, inline=False)
-        embed.add_field(name=f"Translated ({language.capitalize()})", value=translated_text, inline=False)
-        embed.set_footer(text=f"Requested by {ctx.author.name}")
-        
-        await ctx.send(embed=embed)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    translated_text = "".join([sentence[0] for sentence in data[0] if sentence[0]])
+                    
+                    embed = discord.Embed(title="🌐 Translation Result", color=discord.Color.blue())
+                    embed.add_field(name="Original Text", value=text, inline=False)
+                    embed.add_field(name=f"Translated ({language.capitalize()})", value=translated_text, inline=False)
+                    embed.set_footer(text=f"Requested by {ctx.author.name}")
+                    
+                    await ctx.send(embed=embed)
+                else:
+                    await ctx.send(f"❌ Translation server returned error code `{response.status}`. Please try again.")
     except Exception as e:
-        await ctx.send(f"❌ Failed to translate. Make sure you typed a valid target language first.\nExample: `!translate french hello how are you`\nError: `{e}`")
+        await ctx.send(f"❌ Failed to translate text. Error: `{e}`")
 
 @translate_prefix.error
 async def translate_error(ctx, error):
