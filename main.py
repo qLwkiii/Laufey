@@ -55,22 +55,45 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
-# ==================== TRANSLATOR COMMAND ====================
+# ==================== PREFIX COMMANDS ====================
 
-@bot.tree.command(name="translate", description="Translate text into another language")
-@app_commands.describe(text="The text you want to translate", language="Target language (e.g. spanish, french, japanese, english, german)")
-async def translate_cmd(interaction: discord.Interaction, text: str, language: str):
-    await interaction.response.defer()
+@bot.command(name="translate")
+async def translate_prefix(ctx, language: str, *, text: str):
+    """Usage: !translate spanish hello how are you"""
     try:
-        translated_text = MyMemoryTranslator(source='auto', target=language.lower()).translate(text)
+        # Translate text
+        translator = MyMemoryTranslator(source='auto', target=language.lower())
+        translated_text = translator.translate(text)
+        
         embed = discord.Embed(title="🌐 Translation Result", color=discord.Color.blue())
         embed.add_field(name="Original Text", value=text, inline=False)
         embed.add_field(name=f"Translated ({language.capitalize()})", value=translated_text, inline=False)
-        await interaction.followup.send(embed=embed)
+        embed.set_footer(text=f"Requested by {ctx.author.name}")
+        
+        await ctx.send(embed=embed)
     except Exception as e:
-        await interaction.followup.send(f"❌ Failed to translate. Please make sure you specified a valid language (e.g., `spanish`, `french`, `japanese`, `english`). Error: {e}", ephemeral=True)
+        await ctx.send(f"❌ Failed to translate. Make sure you typed a valid target language first.\nExample: `!translate spanish hello how are you`\nError: `{e}`")
 
-# ==================== SETUP & CONFIG COMMANDS ====================
+@translate_prefix.error
+async def translate_error(ctx, error):
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("⚠️ Usage format: `!translate <language> <text>`\nExample: `!translate french Hello world`", delete_after=10)
+
+@bot.command(name="clear")
+async def clear(ctx, amount: int = 5):
+    if not ctx.author.guild_permissions.manage_messages:
+        await ctx.send("❌ You do not have permission to use this command.", delete_after=5)
+        return
+    await ctx.message.delete()
+    deleted = await ctx.channel.purge(limit=amount)
+    await ctx.send(f"🧹 Successfully deleted {len(deleted)} messages.", delete_after=5)
+
+@clear.error
+async def clear_error(ctx, error):
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("⚠️ Please specify how many messages to clear, e.g., `!clear 10`", delete_after=5)
+
+# ==================== SETUP & CONFIG SLASH COMMANDS ====================
 
 @bot.tree.command(name="setwelcome", description="Choose the channel for welcome messages")
 @app_commands.checks.has_permissions(manage_channels=True)
@@ -208,22 +231,6 @@ async def on_message(message: discord.Message):
         save_json(LEVELS_FILE, levels_data)
 
     await bot.process_commands(message)
-
-# ==================== PREFIX COMMANDS (Clear) ====================
-
-@bot.command(name="clear")
-async def clear(ctx, amount: int = 5):
-    if not ctx.author.guild_permissions.manage_messages:
-        await ctx.send("❌ You do not have permission to use this command.", delete_after=5)
-        return
-    await ctx.message.delete()
-    deleted = await ctx.channel.purge(limit=amount)
-    await ctx.send(f"🧹 Successfully deleted {len(deleted)} messages.", delete_after=5)
-
-@clear.error
-async def clear_error(ctx, error):
-    if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("⚠️ Please specify how many messages to clear, e.g., `!clear 10`", delete_after=5)
 
 # ==================== MODERATION SLASH COMMANDS ====================
 
