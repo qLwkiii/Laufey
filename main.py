@@ -6,6 +6,7 @@ import os
 import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+from googletrans import Translator
 
 # --- Tiny Web Server to satisfy Render's port requirement ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -27,6 +28,7 @@ intents.members = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+translator = Translator()
 
 # --- Configuration Storage (channels.json & levels.json) ---
 CONFIG_FILE = "channels.json"
@@ -53,6 +55,22 @@ async def on_ready():
         print(f"Synced {len(synced)} command(s)")
     except Exception as e:
         print(f"Failed to sync commands: {e}")
+
+# ==================== TRANSLATOR COMMAND ====================
+
+@bot.tree.command(name="translate", description="Translate text into another language")
+@app_commands.describe(text="The text you want to translate", language="Target language (e.g. spanish, french, japanese, english, german)")
+async def translate_cmd(interaction: discord.Interaction, text: str, language: str):
+    await interaction.response.defer()
+    try:
+        # Detect language and translate
+        translated = translator.translate(text, dest=language.lower())
+        embed = discord.Embed(title="🌐 Translation Result", color=discord.Color.blue())
+        embed.add_field(name="Original Text", value=text, inline=False)
+        embed.add_field(name=f"Translated ({translated.dest.upper()})", value=translated.text, inline=False)
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed to translate. Make sure you entered a valid language name (e.g., `spanish`, `french`, `japanese`, `english`). Error: {e}", ephemeral=True)
 
 # ==================== SETUP & CONFIG COMMANDS ====================
 
@@ -161,7 +179,6 @@ async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    # Check if leveling is enabled for this server
     config_data = load_json(CONFIG_FILE)
     guild_id = str(message.guild.id)
     
