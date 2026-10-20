@@ -6,7 +6,7 @@ import os
 import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
-from deep_translator import GoogleTranslator
+from deep_translator import MyMemoryTranslator
 
 # --- Tiny Web Server to satisfy Render's port requirement ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -62,7 +62,7 @@ async def on_ready():
 async def translate_cmd(interaction: discord.Interaction, text: str, language: str):
     await interaction.response.defer()
     try:
-        translated_text = GoogleTranslator(source='auto', target=language.lower()).translate(text)
+        translated_text = MyMemoryTranslator(source='auto', target=language.lower()).translate(text)
         embed = discord.Embed(title="🌐 Translation Result", color=discord.Color.blue())
         embed.add_field(name="Original Text", value=text, inline=False)
         embed.add_field(name=f"Translated ({language.capitalize()})", value=translated_text, inline=False)
