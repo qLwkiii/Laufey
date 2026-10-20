@@ -6,7 +6,7 @@ import os
 import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
-from deep_translator import MyMemoryTranslator
+import mtranslate
 
 # --- Tiny Web Server to satisfy Render's port requirement ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -61,9 +61,8 @@ async def on_ready():
 async def translate_prefix(ctx, language: str, *, text: str):
     """Usage: !translate spanish hello how are you"""
     try:
-        # Translate text
-        translator = MyMemoryTranslator(source='auto', target=language.lower())
-        translated_text = translator.translate(text)
+        # mtranslate translate function: translate(to_translate, to_language, from_language)
+        translated_text = mtranslate.translate(text, language.lower(), "auto")
         
         embed = discord.Embed(title="🌐 Translation Result", color=discord.Color.blue())
         embed.add_field(name="Original Text", value=text, inline=False)
@@ -72,7 +71,7 @@ async def translate_prefix(ctx, language: str, *, text: str):
         
         await ctx.send(embed=embed)
     except Exception as e:
-        await ctx.send(f"❌ Failed to translate. Make sure you typed a valid target language first.\nExample: `!translate spanish hello how are you`\nError: `{e}`")
+        await ctx.send(f"❌ Failed to translate. Make sure you typed a valid target language first.\nExample: `!translate french hello how are you`\nError: `{e}`")
 
 @translate_prefix.error
 async def translate_error(ctx, error):
