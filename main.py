@@ -6,7 +6,7 @@ import os
 import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 
 # --- Tiny Web Server to satisfy Render's port requirement ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -28,7 +28,6 @@ intents.members = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-translator = Translator()
 
 # --- Configuration Storage (channels.json & levels.json) ---
 CONFIG_FILE = "channels.json"
@@ -63,14 +62,13 @@ async def on_ready():
 async def translate_cmd(interaction: discord.Interaction, text: str, language: str):
     await interaction.response.defer()
     try:
-        # Detect language and translate
-        translated = translator.translate(text, dest=language.lower())
+        translated_text = GoogleTranslator(source='auto', target=language.lower()).translate(text)
         embed = discord.Embed(title="🌐 Translation Result", color=discord.Color.blue())
         embed.add_field(name="Original Text", value=text, inline=False)
-        embed.add_field(name=f"Translated ({translated.dest.upper()})", value=translated.text, inline=False)
+        embed.add_field(name=f"Translated ({language.capitalize()})", value=translated_text, inline=False)
         await interaction.followup.send(embed=embed)
     except Exception as e:
-        await interaction.followup.send(f"❌ Failed to translate. Make sure you entered a valid language name (e.g., `spanish`, `french`, `japanese`, `english`). Error: {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ Failed to translate. Please make sure you specified a valid language (e.g., `spanish`, `french`, `japanese`, `english`). Error: {e}", ephemeral=True)
 
 # ==================== SETUP & CONFIG COMMANDS ====================
 
