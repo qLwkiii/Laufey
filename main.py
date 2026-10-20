@@ -54,7 +54,7 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
-# ==================== SETUP & REMOVE COMMANDS ====================
+# ==================== SETUP & CONFIG COMMANDS ====================
 
 @bot.tree.command(name="setwelcome", description="Choose the channel for welcome messages")
 @app_commands.checks.has_permissions(manage_channels=True)
@@ -113,6 +113,27 @@ async def setlevel(interaction: discord.Interaction, channel: discord.TextChanne
     save_json(CONFIG_FILE, data)
     await interaction.response.send_message(f"✅ Level-up channel set to {channel.mention}", ephemeral=True)
 
+@bot.tree.command(name="enablelevels", description="Turn on the server leveling system")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def enablelevels(interaction: discord.Interaction):
+    data = load_json(CONFIG_FILE)
+    str_guild_id = str(interaction.guild_id)
+    if str_guild_id not in data:
+        data[str_guild_id] = {}
+    data[str_guild_id]["levels_enabled"] = True
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message("✅ Leveling system has been **enabled**!", ephemeral=True)
+
+@bot.tree.command(name="disablelevels", description="Turn off and disable the server leveling system")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def disablelevels(interaction: discord.Interaction):
+    data = load_json(CONFIG_FILE)
+    str_guild_id = str(interaction.guild_id)
+    if str_guild_id in data:
+        data[str_guild_id]["levels_enabled"] = False
+        save_json(CONFIG_FILE, data)
+    await interaction.response.send_message("❌ Leveling system has been **disabled**.", ephemeral=True)
+
 # ==================== EVENTS (Welcome, Leave & Levels) ====================
 
 @bot.event
@@ -140,36 +161,56 @@ async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    levels_data = load_json(LEVELS_FILE)
+    # Check if leveling is enabled for this server
+    config_data = load_json(CONFIG_FILE)
     guild_id = str(message.guild.id)
-    user_id = str(message.author.id)
-
-    if guild_id not in levels_data:
-        levels_data[guild_id] = {}
-    if user_id not in levels_data[guild_id]:
-        levels_data[guild_id][user_id] = {"xp": 0, "level": 1}
-
-    user_data = levels_data[guild_id][user_id]
-    user_data["xp"] += 10
     
-    next_level_xp = user_data["level"] * 100
-    if user_data["xp"] >= next_level_xp:
-        user_data["level"] += 1
-        user_data["xp"] = 0
+    if guild_id in config_data and config_data[guild_id].get("levels_enabled", False):
+        levels_data = load_json(LEVELS_FILE)
+        user_id = str(message.author.id)
+
+        if guild_id not in levels_data:
+            levels_data[guild_id] = {}
+        if user_id not in levels_data[guild_id]:
+            levels_data[guild_id][user_id] = {"xp": 0, "level": 1}
+
+        user_data = levels_data[guild_id][user_id]
+        user_data["xp"] += 10
         
-        config_data = load_json(CONFIG_FILE)
-        announcement_channel = message.channel
-        if guild_id in config_data and "level_channel" in config_data[guild_id]:
-            custom_chan = message.guild.get_channel(config_data[guild_id]["level_channel"])
-            if custom_chan:
-                announcement_channel = custom_chan
+        next_level_xp = user_data["level"] * 100
+        if user_data["xp"] >= next_level_xp:
+            user_data["level"] += 1
+            user_data["xp"] = 0
+            
+            announcement_channel = message.channel
+            if "level_channel" in config_data[guild_id]:
+                custom_chan = message.guild.get_channel(config_data[guild_id]["level_channel"])
+                if custom_chan:
+                    announcement_channel = custom_chan
 
-        await announcement_channel.send(f"🎉 Congrats {message.author.mention}, you leveled up to **Level {user_data['level']}**!")
+            await announcement_channel.send(f"🎉 Congrats {message.author.mention}, you leveled up to **Level {user_data['level']}**!")
 
-    save_json(LEVELS_FILE, levels_data)
+        save_json(LEVELS_FILE, levels_data)
+
     await bot.process_commands(message)
 
-# ==================== MODERATION COMMANDS ====================
+# ==================== PREFIX COMMANDS (Clear) ====================
+
+@bot.command(name="clear")
+async def clear(ctx, amount: int = 5):
+    if not ctx.author.guild_permissions.manage_messages:
+        await ctx.send("❌ You do not have permission to use this command.", delete_after=5)
+        return
+    await ctx.message.delete()
+    deleted = await ctx.channel.purge(limit=amount)
+    await ctx.send(f"🧹 Successfully deleted {len(deleted)} messages.", delete_after=5)
+
+@clear.error
+async def clear_error(ctx, error):
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("⚠️ Please specify how many messages to clear, e.g., `!clear 10`", delete_after=5)
+
+# ==================== MODERATION SLASH COMMANDS ====================
 
 @bot.tree.command(name="kick", description="Kick a member from the server")
 @app_commands.checks.has_permissions(kick_members=True)
@@ -238,6 +279,8 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
 @setleave.error
 @removeleave.error
 @setlevel.error
+@enablelevels.error
+@disablelevels.error
 async def on_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
         if not interaction.response.is_done():
