@@ -3,10 +3,11 @@ from discord import app_commands
 from discord.ext import commands
 import datetime
 import os
+import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
-# --- 1. Tiny Web Server to satisfy Render's port requirement ---
+# --- Tiny Web Server to satisfy Render's port requirement ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -18,14 +19,31 @@ def run_web_server():
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
     server.serve_forever()
 
-# Start the web server in the background thread
 threading.Thread(target=run_web_server, daemon=True).start()
 # -------------------------------------------------------------
 
 intents = discord.Intents.default()
 intents.members = True
+intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# --- Configuration Storage (channels.json & levels.json) ---
+CONFIG_FILE = "channels.json"
+LEVELS_FILE = "levels.json"
+
+def load_json(filename):
+    if os.path.exists(filename):
+        with open(filename, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {}
+    return {}
+
+def save_json(filename, data):
+    with open(filename, "w") as f:
+        json.dump(data, f, indent=4)
 
 @bot.event
 async def on_ready():
@@ -36,7 +54,82 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
-# 1. Kick Command
+# ==================== SETUP COMMANDS ====================
+
+@bot.tree.command(name="setwelcome", description="Choose the channel for welcome messages")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def setwelcome(interaction: discord.Interaction, channel: discord.TextChannel):
+    data = load_json(CONFIG_FILE)
+    str_guild_id = str(interaction.guild_id)
+    if str_guild_id not in data:
+        data[str_guild_id] = {}
+    data[str_guild_id]["welcome_channel"] = channel.id
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"✅ Welcome channel set to {channel.mention}", ephemeral=True)
+
+@bot.tree.command(name="setlevel", description="Choose the channel for level-up announcements")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def setlevel(interaction: discord.Interaction, channel: discord.TextChannel):
+    data = load_json(CONFIG_FILE)
+    str_guild_id = str(interaction.guild_id)
+    if str_guild_id not in data:
+        data[str_guild_id] = {}
+    data[str_guild_id]["level_channel"] = channel.id
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"✅ Level-up channel set to {channel.mention}", ephemeral=True)
+
+# ==================== EVENTS (Welcome & Levels) ====================
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    data = load_json(CONFIG_FILE)
+    str_guild_id = str(member.guild.id)
+    if str_guild_id in data and "welcome_channel" in data[str_guild_id]:
+        channel_id = data[str_guild_id]["welcome_channel"]
+        channel = member.guild.get_channel(channel_id)
+        if channel:
+            await channel.send(f"👋 Welcome to the server, {member.mention}! We're glad to have you here.")
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot or not message.guild:
+        return
+
+    # Basic Leveling System (Gives XP per message)
+    levels_data = load_json(LEVELS_FILE)
+    guild_id = str(message.guild.id)
+    user_id = str(message.author.id)
+
+    if guild_id not in levels_data:
+        levels_data[guild_id] = {}
+    if user_id not in levels_data[guild_id]:
+        levels_data[guild_id][user_id] = {"xp": 0, "level": 1}
+
+    # Add XP
+    user_data = levels_data[guild_id][user_id]
+    user_data["xp"] += 10
+    
+    # Level up threshold formula: Level * 100 XP required for next level
+    next_level_xp = user_data["level"] * 100
+    if user_data["xp"] >= next_level_xp:
+        user_data["level"] += 1
+        user_data["xp"] = 0 # Reset XP for next level
+        
+        # Send level up message in the chosen level channel (or current channel if not set)
+        config_data = load_json(CONFIG_FILE)
+        announcement_channel = message.channel
+        if guild_id in config_data and "level_channel" in config_data[guild_id]:
+            custom_chan = message.guild.get_channel(config_data[guild_id]["level_channel"])
+            if custom_chan:
+                announcement_channel = custom_chan
+
+        await announcement_channel.send(f"🎉 Congrats {message.author.mention}, you leveled up to **Level {user_data['level']}**!")
+
+    save_json(LEVELS_FILE, levels_data)
+    await bot.process_commands(message)
+
+# ==================== MODERATION COMMANDS ====================
+
 @bot.tree.command(name="kick", description="Kick a member from the server")
 @app_commands.checks.has_permissions(kick_members=True)
 async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
@@ -44,7 +137,6 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
     await member.kick(reason=reason)
     await interaction.followup.send(f"✅ {member.mention} was kicked. Reason: {reason}")
 
-# 2. Ban Command
 @bot.tree.command(name="ban", description="Ban a member from the server")
 @app_commands.checks.has_permissions(ban_members=True)
 async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
@@ -52,7 +144,6 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
     await member.ban(reason=reason)
     await interaction.followup.send(f"⛔ {member.mention} was banned. Reason: {reason}")
 
-# 3. Flexible Timeout Command (Seconds, Minutes, Hours, Days)
 @bot.tree.command(name="timeout", description="Timeout a member for a set duration and unit")
 @app_commands.choices(unit=[
     app_commands.Choice(name="Seconds", value="seconds"),
@@ -64,7 +155,6 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
 async def timeout(interaction: discord.Interaction, member: discord.Member, duration: int, unit: str, reason: str = "No reason provided"):
     await interaction.response.defer()
     
-    # Calculate timedelta based on selected unit
     if unit == "seconds":
         delta = datetime.timedelta(seconds=duration)
     elif unit == "minutes":
@@ -79,7 +169,6 @@ async def timeout(interaction: discord.Interaction, member: discord.Member, dura
     await member.timeout(delta, reason=reason)
     await interaction.followup.send(f"🔇 {member.mention} has been timed out for {duration} {unit}. Reason: {reason}")
 
-# 4. Remove Timeout Command
 @bot.tree.command(name="untimeout", description="Remove timeout from a member")
 @app_commands.checks.has_permissions(moderate_members=True)
 async def untimeout(interaction: discord.Interaction, member: discord.Member):
@@ -87,11 +176,24 @@ async def untimeout(interaction: discord.Interaction, member: discord.Member):
     await member.timeout(None)
     await interaction.followup.send(f"🔊 Timeout removed for {member.mention}.")
 
+@bot.tree.command(name="warn", description="Issue a warning to a member")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def warn(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    await interaction.response.defer()
+    try:
+        await member.send(f"⚠️ You have been warned in **{interaction.guild.name}**. Reason: {reason}")
+    except discord.Forbidden:
+        pass
+    await interaction.followup.send(f"⚠️ {member.mention} has been warned. Reason: {reason}")
+
 # Error Handler
 @kick.error
 @ban.error
 @timeout.error
 @untimeout.error
+@warn.error
+@setwelcome.error
+@setlevel.error
 async def on_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
         if not interaction.response.is_done():
@@ -99,5 +201,4 @@ async def on_command_error(interaction: discord.Interaction, error: app_commands
         else:
             await interaction.followup.send("❌ You do not have permission to use this command.", ephemeral=True)
 
-# Run the bot using Render environment variables
 bot.run(os.environ.get("DISCORD_TOKEN"))
