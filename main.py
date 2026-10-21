@@ -52,9 +52,9 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 async def on_ready():
     try:
         synced = await bot.tree.sync()
-        print(f"Logged in as {bot.user} | Synced {len(synced)} slash commands.")
+        print(f"✅ Logged in as {bot.user} | Synced {len(synced)} slash commands.")
     except Exception as e:
-        print(f"Failed to sync slash commands: {e}")
+        print(f"❌ Failed to sync slash commands: {e}")
 
 # ==================== MODERATION COMMANDS ====================
 @bot.tree.command(name="clear", description="Clear a specified number of messages")
@@ -187,12 +187,10 @@ async def giveaway(interaction: discord.Interaction, prize: str, duration_minute
     await interaction.response.send_message(embed=embed)
     msg = await interaction.original_response()
     await msg.add_reaction("🎉")
+    # ==================== TICKET MANAGEMENT SYSTEM ====================
+ticket_group = app_commands.Group(name="ticket", description="Ticket management commands")
 
-# ==================== TICKET MANAGEMENT SYSTEM ====================
-
-ticket = app_commands.Group(name="ticket", description="Ticket management commands")
-
-@ticket.command(name="setup", description="Setup the ticket panel channel")
+@ticket_group.command(name="setup", description="Setup the ticket panel channel")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def ticket_setup(interaction: discord.Interaction, channel: discord.TextChannel):
     data = load_json(CONFIG_FILE)
@@ -202,15 +200,14 @@ async def ticket_setup(interaction: discord.Interaction, channel: discord.TextCh
     save_json(CONFIG_FILE, data)
     await interaction.response.send_message(f"✅ Ticket channel set to {channel.mention}.", ephemeral=True)
 
-@ticket.command(name="panel", description="Send the interactive ticket creation panel")
+@ticket_group.command(name="panel", description="Send the interactive ticket creation panel")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def ticket_panel(interaction: discord.Interaction):
     embed = discord.Embed(title="🎫 Support Tickets", description="Click the button below to create a support ticket.", color=discord.Color.blue())
     await interaction.channel.send(embed=embed)
     await interaction.response.send_message("✅ Ticket panel sent!", ephemeral=True)
 
-# Register the ticket group to the bot tree
-bot.tree.add_command(ticket)
+bot.tree.add_command(ticket_group)
 
 # ==================== LEVELING & XP SYSTEM ====================
 @bot.tree.command(name="rank", description="Check your or another member's current rank and level")
@@ -301,12 +298,8 @@ async def level_rewards(interaction: discord.Interaction):
     embed = discord.Embed(title="🎁 Level Role Rewards", description=desc, color=discord.Color.purple())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ==============================================================================
-# ADVANCED INVITE TRACKING SYSTEM (Falcon Style)
-# ==============================================================================
-
-def create_falcon_invite_embed(target: discord.User | discord.Member) -> discord.Embed:
-    # Stats variables — ready for database integration
+# ==================== ADVANCED INVITE TRACKING SYSTEM (Falcon Style) ====================
+def create_falcon_invite_embed(target: discord.User | discord.Member, requester_name: str) -> discord.Embed:
     joins = 0
     left = 0
     fake = 0
@@ -324,38 +317,32 @@ def create_falcon_invite_embed(target: discord.User | discord.Member) -> discord
             f"▸ Discover new events and giveaways!\n"
             f"▸ Customize this command in premium!"
         ),
-        color=discord.Color.from_str("#1abc9c")  # Matching Falcon's Cyan sidebar color
+        color=discord.Color.from_str("#1abc9c")
     )
-    
     if hasattr(target, 'display_avatar'):
         embed.set_thumbnail(url=target.display_avatar.url)
         
+    embed.set_footer(text=f"Requested by {requester_name}. | Today at {discord.utils.utcnow().strftime('%I:%M %p')}")
     return embed
-
 
 # Slash Command: /invites
 @bot.tree.command(name="invites", description="Check detailed invite statistics for a user")
 async def invites_slash(interaction: discord.Interaction, member: discord.Member = None):
     target = member or interaction.user
-    embed = create_falcon_invite_embed(target)
-    embed.set_footer(text=f"Requested by {interaction.user.name} | Today at {discord.utils.utcnow().strftime('%I:%M %p')}")
+    embed = create_falcon_invite_embed(target, interaction.user.name)
     await interaction.response.send_message(embed=embed)
-
 
 # Prefix Command: !invites or !invites @user
 @bot.command(name="invites")
 async def invites_prefix_cmd(ctx, member: discord.Member = None):
     target = member or ctx.author
-    embed = create_falcon_invite_embed(target)
-    embed.set_footer(text=f"Requested by {ctx.author.name} | Today at {discord.utils.utcnow().strftime('%I:%M %p')}")
+    embed = create_falcon_invite_embed(target, ctx.author.name)
     await ctx.send(embed=embed)
-
 
 @bot.tree.command(name="invite-leaderboard", description="Show top inviters in the server")
 async def invite_leaderboard(interaction: discord.Interaction):
     embed = discord.Embed(title="🏆 Server Invite Leaderboard", description="1. **No active stats recorded yet** — 0 Invites", color=discord.Color.gold())
     await interaction.response.send_message(embed=embed)
-
 
 @bot.tree.command(name="invite-rewards", description="View custom invite milestone rewards")
 async def invite_rewards(interaction: discord.Interaction):
@@ -369,7 +356,6 @@ async def invite_rewards(interaction: discord.Interaction):
         embed = discord.Embed(title="🎁 Invite Milestone Rewards", description=desc, color=discord.Color.purple())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
 @bot.tree.command(name="invite-rewards-set", description="Set a role reward for a milestone number of invites")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def invite_rewards_set(interaction: discord.Interaction, invites: int, role: discord.Role):
@@ -381,24 +367,20 @@ async def invite_rewards_set(interaction: discord.Interaction, invites: int, rol
     save_json(CONFIG_FILE, data)
     await interaction.response.send_message(f"🎁 Invite reward set! Reaching **{invites} invites** will now grant {role.mention}.", ephemeral=True)
 
-
 @bot.tree.command(name="fake-invites", description="Check how many fake/alt invites a user has")
 async def fake_invites(interaction: discord.Interaction, member: discord.Member = None):
     target = member or interaction.user
     await interaction.response.send_message(f"🛡️ **{target.name}** has 0 fake or suspicious invites.", ephemeral=True)
-
 
 @bot.tree.command(name="invite-bonus", description="Add or remove bonus invites for a member")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def invite_bonus(interaction: discord.Interaction, member: discord.Member, amount: int):
     await interaction.response.send_message(f"✨ Successfully adjusted bonus invites for {member.mention} by `{amount}`.", ephemeral=True)
 
-
 @bot.tree.command(name="invite-reset", description="Reset a user's invite count")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def invite_reset(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message(f"🔄 Reset invite tracking stats for {member.mention}.", ephemeral=True)
-
 
 # ==================== RUN BOT ====================
 token = os.environ.get("DISCORD_TOKEN")
