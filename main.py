@@ -579,7 +579,77 @@ async def antispam_off(interaction: discord.Interaction):
     await interaction.response.send_message("❌ Anti-spam disabled.", ephemeral=True)
 
 bot.tree.add_command(antispam_group)
+# ==================== TICKETS & UTILITIES ====================
 
+@ticket_group.command(name="add", description="Add a ticket department (emoji first)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def ticket_add(interaction: discord.Interaction, name: str, emoji: str = "🎫"):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    if "ticket_departments" not in data[gid]: data[gid]["ticket_departments"] = []
+    data[gid]["ticket_departments"].append({"name": name, "emoji": emoji})
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"✅ Added ticket department: {emoji} {name}", ephemeral=True)
+
+@ticket_group.command(name="edit", description="Change a department's name, emoji, description...")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def ticket_edit(interaction: discord.Interaction, index: int, new_name: str):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    depts = data.get(gid, {}).get("ticket_departments", [])
+    if 0 <= index - 1 < len(depts):
+        depts[index - 1]["name"] = new_name
+        save_json(CONFIG_FILE, data)
+        await interaction.response.send_message(f"✅ Updated department #{index} to `{new_name}`", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Invalid department number.", ephemeral=True)
+
+@ticket_group.command(name="list", description="Show all departments and current ticket set...")
+async def ticket_list(interaction: discord.Interaction):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    depts = data.get(gid, {}).get("ticket_departments", [])
+    if not depts:
+        await interaction.response.send_message("❌ No custom ticket departments configured.", ephemeral=True)
+        return
+    desc = "\n".join([f"{i+1}. {d.get('emoji', '🎫')} **{d['name']}**" for i, d in enumerate(depts)])
+    embed = discord.Embed(title="🎟️ Ticket Departments", description=desc, color=discord.Color.blue())
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="invite", description="Get the link to add this bot to a server")
+async def invite_bot(interaction: discord.Interaction):
+    app_info = await bot.application_info()
+    url = f"https://discord.com/api/oauth2/authorize?client_id={app_info.id}&permissions=8&scope=bot%20applications.commands"
+    embed = discord.Embed(title="🤖 Invite Laufey", description=f"[Click here to add Laufey to your server!]({url})", color=discord.Color.blurple())
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="invites", description="Check how many invites a user has")
+async def check_invites(interaction: discord.Interaction, member: discord.Member = None):
+    target = member or interaction.user
+    await interaction.response.send_message(f"📊 Tracking invites for **{target.name}**.", ephemeral=True)
+
+@bot.tree.command(name="inviter", description="Find out who invited a member")
+async def inviter_cmd(interaction: discord.Interaction, member: discord.Member):
+    await interaction.response.send_message(f"🔍 Checking invite records for {member.mention}...", ephemeral=True)
+
+@bot.tree.command(name="invited", description="List members a user invited who are still in the server")
+async def invited_cmd(interaction: discord.Interaction, member: discord.Member = None):
+    target = member or interaction.user
+    await interaction.response.send_message(f"📜 Showing users invited by **{target.name}**.", ephemeral=True)
+
+@bot.tree.command(name="messages", description="Check a member's message count")
+async def messages_cmd(interaction: discord.Interaction, member: discord.Member = None):
+    target = member or interaction.user
+    levels = load_json(LEVELS_FILE)
+    gid = str(interaction.guild_id)
+    uid = str(target.id)
+    user_data = levels.get(gid, {}).get(uid, {"xp": 0, "level": 1})
+    
+    embed = discord.Embed(title=f"📈 Message & Activity Stats for {target.name}", color=discord.Color.green())
+    embed.add_field(name="⭐ Level", value=str(user_data["level"]), inline=True)
+    embed.add_field(name="✨ XP", value=str(user_data["xp"]), inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 token = os.environ.get("DISCORD_TOKEN")
 if token: 
     bot.run(token)
