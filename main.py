@@ -1,6 +1,5 @@
 import os
 import json
-import asyncio
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import datetime
@@ -11,7 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 
 # ==========================================
-# 1. RENDER / HOSTING KEEP-ALIVE WEB SERVER
+# 1. KEEP-ALIVE WEB SERVER (Background Thread)
 # ==========================================
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -22,10 +21,10 @@ class SimpleHandler(BaseHTTPRequestHandler):
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(('0.0.0.0', port), SimpleHandler)
+    print(f"Web server running on port {port}")
     server.serve_forever()
 
 threading.Thread(target=run_web_server, daemon=True).start()
-
 
 # ==========================================
 # 2. DISCORD BOT INITIALIZATION & JSON DATA
@@ -69,7 +68,6 @@ def parse_time_duration(time_str: str) -> datetime.timedelta:
     if unit == 'h': return datetime.timedelta(hours=value)
     if unit == 'd': return datetime.timedelta(days=value)
     return None
-
 
 # ==========================================
 # ALL 18 MODERATION & UTILITY COMMANDS
@@ -261,5 +259,9 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     else:
         await interaction.response.send_message(f"❌ An error occurred: {error}", ephemeral=True)
 
-# Run the bot securely using the Render environment variable
-bot.run(os.environ.get("DISCORD_TOKEN"))
+# Run the bot securely via Render Environment Variables
+TOKEN = os.environ.get("DISCORD_TOKEN")
+if not TOKEN:
+    print("ERROR: DISCORD_TOKEN is missing!")
+else:
+    bot.run(TOKEN)
