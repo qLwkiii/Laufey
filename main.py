@@ -615,9 +615,9 @@ async def poll(interaction: discord.Interaction, question: str, option1: str, op
 # CATEGORY 6: ADVANCED INVITE TRACKING SYSTEM
 # ==============================================================================
 
-# Slash Command: /invites
-@bot.tree.command(name="invites", description="Check detailed invite statistics for a user")
-async def invites_cmd(interaction: discord.Interaction, member: discord.Member = None):
+# Slash Command: /invite (Changed from /invites to avoid duplicate registration error)
+@bot.tree.command(name="invite", description="Check detailed invite statistics for a user")
+async def invite_cmd(interaction: discord.Interaction, member: discord.Member = None):
     target = member or interaction.user
     
     regular, left, fake, bonus = 0, 0, 0, 0
