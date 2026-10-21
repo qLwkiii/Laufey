@@ -31,11 +31,11 @@ intents.invites = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- Configuration & Storage ---
+# --- Configuration & Storage Files ---
 CONFIG_FILE = "channels.json"
 LEVELS_FILE = "levels.json"
 GIVEAWAYS_FILE = "giveaways.json"
-INVITES_CACHE = {}
+INVITES_CACHE = {}  # {guild_id: {invite_code: uses}}
 
 def load_json(filename):
     if os.path.exists(filename):
@@ -53,12 +53,14 @@ def save_json(filename, data):
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
+    
+    # Cache server invites on startup for tracking
     for guild in bot.guilds:
         try:
             invites = await guild.invites()
             INVITES_CACHE[guild.id] = {invite.code: invite.uses for invite in invites}
         except discord.Forbidden:
-            pass
+            print(f"Missing Manage Server permissions to fetch invites in {guild.name}")
 
     try:
         synced = await bot.tree.sync()
@@ -79,14 +81,14 @@ async def on_invite_delete(invite):
 
 # ==================== ADVANCED GIVEAWAY SYSTEM ====================
 
-@bot.tree.command(name="gstart", description="Start a giveaway (Unit: seconds, minutes, hours, days)")
+@bot.tree.command(name="gstart", description="Start a giveaway with optional role requirements and rules")
 @app_commands.describe(
     duration="Number of units (e.g. 10)",
     unit="Type: seconds, minutes, hours, or days",
     winners="Number of winners",
     prize="Prize description",
     required_role="Optional role required to enter/win",
-    requirements="Optional description of requirements"
+    requirements="Optional description of custom rules"
 )
 async def gstart(
     interaction: discord.Interaction, 
@@ -229,7 +231,7 @@ async def gstop(interaction: discord.Interaction, message_id: str):
     except (discord.NotFound, ValueError):
         await interaction.followup.send("❌ Could not find a message with that ID in this channel.", ephemeral=True)
 
-# ==================== INVITE TRACKER COMMANDS ====================
+# ==================== CONFIGURATION COMMANDS ====================
 
 @bot.tree.command(name="setinvitracker", description="Choose channel for invite tracking alerts")
 @app_commands.checks.has_permissions(manage_channels=True)
@@ -253,8 +255,6 @@ async def removeinvitracker(interaction: discord.Interaction):
         await interaction.response.send_message("✅ Invite tracking has been disabled.", ephemeral=True)
     else:
         await interaction.response.send_message("⚠️ No invite tracker channel is currently set.", ephemeral=True)
-
-# ==================== SETUP & CONFIG COMMANDS ====================
 
 @bot.tree.command(name="setwelcome", description="Choose channel for welcome messages")
 @app_commands.checks.has_permissions(manage_channels=True)
@@ -334,19 +334,21 @@ async def disablelevels(interaction: discord.Interaction):
         save_json(CONFIG_FILE, data)
     await interaction.response.send_message("❌ Leveling system has been **disabled**.", ephemeral=True)
 
-# ==================== EVENTS ====================
+# ==================== EVENTS (Welcome, Invites, XP) ====================
 
 @bot.event
 async def on_member_join(member: discord.Member):
     data = load_json(CONFIG_FILE)
     str_guild_id = str(member.guild.id)
     
+    # Welcome message
     if str_guild_id in data and "welcome_channel" in data[str_guild_id]:
         channel_id = data[str_guild_id]["welcome_channel"]
         channel = member.guild.get_channel(channel_id)
         if channel:
             await channel.send(f"👋 Welcome to the server, {member.mention}! We're glad to have you here.")
 
+    # Invite Tracking
     if str_guild_id in data and "invite_channel" in data[str_guild_id]:
         inv_channel = member.guild.get_channel(data[str_guild_id]["invite_channel"])
         if inv_channel:
@@ -427,3 +429,38 @@ async def clear(ctx, amount: int = 5):
     await ctx.send(f"🧹 Successfully deleted {len(deleted)} messages.", delete_after=5)
 
 # ==================== MODERATION SLASH COMMANDS ====================
+
+@bot.tree.command(name="kick", description="Kick a member from the server")
+@app_commands.checks.has_permissions(kick_members=True)
+async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    await interaction.response.defer()
+    await member.kick(reason=reason)
+    await interaction.followup.send(f"✅ {member.mention} was kicked. Reason: {reason}")
+
+@bot.tree.command(name="ban", description="Ban a member from the server")
+@app_commands.checks.has_permissions(ban_members=True)
+async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    await interaction.response.defer()
+    await member.ban(reason=reason)
+    await interaction.followup.send(f"⛔ {member.mention} was banned. Reason: {reason}")
+
+@bot.tree.command(name="timeout", description="Timeout a member for a set duration and unit")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def timeout(interaction: discord.Interaction, member: discord.Member, duration: int, unit: str, reason: str = "No reason provided"):
+    await interaction.response.defer()
+    u = unit.lower().strip()
+    if u in ["s", "sec", "seconds"]:
+        delta = datetime.timedelta(seconds=duration)
+    elif u in ["h", "hr", "hours"]:
+        delta = datetime.timedelta(hours=duration)
+    elif u in ["d", "days"]:
+        delta = datetime.timedelta(days=duration)
+    else:
+        delta = datetime.timedelta(minutes=duration)
+
+    await member.timeout(delta, reason=reason)
+    await interaction.followup.send(f"🔇 {member.mention} has been timed out for {duration} {unit}. Reason: {reason}")
+
+@bot.tree.command(name="untimeout", description="Remove timeout from a member")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def untimeout(interaction: discord.Interaction, membe
