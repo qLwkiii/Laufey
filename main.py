@@ -261,3 +261,4 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.response.send_message(f"❌ An error occurred: {error}", ephemeral=True)
 
 bot.run("YOUR_BOT_TOKEN_HERE")
+bot.run(os.environ.get("DISCORD_TOKEN"))
