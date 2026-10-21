@@ -70,8 +70,9 @@ def parse_time_duration(time_str: str) -> datetime.timedelta:
     if unit == 'd': return datetime.timedelta(days=value)
     return None
 
+
 # ==========================================
-# MODERATION & UTILITY COMMANDS (18 TOTAL)
+# ALL 18 MODERATION & UTILITY COMMANDS
 # ==========================================
 
 # 1. Ban
@@ -126,7 +127,7 @@ async def untimeout(interaction: discord.Interaction, member: discord.Member, re
     await member.timeout(None, reason=reason)
     await interaction.response.send_message(f"🔊 Removed timeout for **{member}**.")
 
-# 7. Warn (Saved to JSON)
+# 7. Warn
 @bot.tree.command(name="warn", description="Issues a recorded warning to a user.")
 @app_commands.checks.has_permissions(manage_messages=True)
 async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
@@ -150,7 +151,7 @@ async def warnings(interaction: discord.Interaction, member: discord.Member):
     embed = discord.Embed(title=f"Warnings for {member}", description=reasons, color=discord.Color.orange())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# 9. Delwarn (New: Delete specific warning number)
+# 9. Delwarn
 @bot.tree.command(name="delwarn", description="Deletes a specific warning number from a user's record.")
 @app_commands.checks.has_permissions(manage_messages=True)
 async def delwarn(interaction: discord.Interaction, member: discord.Member, warn_index: int):
@@ -221,7 +222,7 @@ async def nick(interaction: discord.Interaction, member: discord.Member, new_nic
     else:
         await interaction.response.send_message(f"✏️ Cleared nickname for **{member}**.")
 
-# 16. Userinfo (New)
+# 16. Userinfo
 @bot.tree.command(name="userinfo", description="Displays detailed information about a member.")
 async def userinfo(interaction: discord.Interaction, member: discord.Member = None):
     target = member or interaction.user
@@ -260,5 +261,5 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     else:
         await interaction.response.send_message(f"❌ An error occurred: {error}", ephemeral=True)
 
-bot.run("YOUR_BOT_TOKEN_HERE")
+# Run the bot securely using the Render environment variable
 bot.run(os.environ.get("DISCORD_TOKEN"))
