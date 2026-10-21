@@ -4,8 +4,8 @@ from discord.ext import commands
 import datetime
 import os
 import json
-import urllib.parse
-import aiohttp
+import asyncio
+import random
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
@@ -27,20 +27,14 @@ threading.Thread(target=run_web_server, daemon=True).start()
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
+intents.invites = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Language mapping helper
-LANGUAGES = {
-    "french": "fr", "spanish": "es", "japanese": "ja", "german": "de",
-    "italian": "it", "korean": "ko", "chinese": "zh-CN", "russian": "ru",
-    "portuguese": "pt", "hindi": "hi", "arabic": "ar", "english": "en",
-    "dutch": "nl", "polish": "pl", "turkish": "tr", "vietnamese": "vi"
-}
-
-# --- Configuration Storage (channels.json & levels.json) ---
+# --- Configuration & Storage ---
 CONFIG_FILE = "channels.json"
 LEVELS_FILE = "levels.json"
+INVITES_CACHE = {}  # {guild_id: {invite_code: uses}}
 
 def load_json(filename):
     if os.path.exists(filename):
@@ -58,62 +52,154 @@ def save_json(filename, data):
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
+    
+    # Cache all server invites on startup for tracking
+    for guild in bot.guilds:
+        try:
+            invites = await guild.invites()
+            INVITES_CACHE[guild.id] = {invite.code: invite.uses for invite in invites}
+        except discord.Forbidden:
+            print(f"Missing Manage Server permissions to fetch invites in {guild.name}")
+
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
-# ==================== PREFIX COMMANDS ====================
+# Cache invite changes when new invites are created/deleted
+@bot.event
+async def on_invite_create(invite):
+    if invite.guild.id not in INVITES_CACHE:
+        INVITES_CACHE[invite.guild.id] = {}
+    INVITES_CACHE[invite.guild.id][invite.code] = invite.uses
 
-@bot.command(name="translate")
-async def translate_prefix(ctx, language: str, *, text: str):
-    """Usage: !translate french hello"""
-    target_lang = LANGUAGES.get(language.lower(), language.lower())
+@bot.event
+async def on_invite_delete(invite):
+    if invite.guild.id in INVITES_CACHE and invite.code in INVITES_CACHE[invite.guild.id]:
+        del INVITES_CACHE[invite.guild.id][invite.code]
+
+# ==================== GIVEAWAY SYSTEM ====================
+
+@bot.tree.command(name="gstart", description="Start a giveaway")
+@app_commands.checks.has_permissions(manage_events=True)
+@app_commands.choices(unit=[
+    app_commands.Choice(name="Seconds", value="seconds"),
+    app_commands.Choice(name="Minutes", value="minutes"),
+    app_commands.Choice(name="Hours", value="hours"),
+    app_commands.Choice(name="Days", value="days")
+])
+async def gstart(interaction: discord.Interaction, duration: int, unit: str, winners: int, prize: str):
+    await interaction.response.defer()
     
-    url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={target_lang}&dt=t&q={urllib.parse.quote(text)}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-    }
+    # Convert duration to seconds
+    if unit == "seconds":
+        seconds = duration
+    elif unit == "minutes":
+        seconds = duration * 60
+    elif unit == "hours":
+        seconds = duration * 3600
+    elif unit == "days":
+        seconds = duration * 86400
+    else:
+        seconds = duration * 60
 
+    end_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=seconds)
+    timestamp = f"<t:{int(end_time.timestamp())}:R>"
+
+    embed = discord.Embed(title="🎉 GIVEAWAY STARTED! 🎉", description=f"**Prize:** {prize}\n**Winners:** {winners}\n**Ends:** {timestamp}\n**Hosted by:** {interaction.user.mention}", color=discord.Color.gold())
+    embed.set_footer(text="React with 🎉 to enter!")
+
+    message = await interaction.followup.send(embed=embed, wait=True)
+    await message.add_reaction("🎉")
+
+    await asyncio.sleep(seconds)
+
+    # Fetch updated message to check reactions
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    translated_text = "".join([sentence[0] for sentence in data[0] if sentence[0]])
-                    
-                    embed = discord.Embed(title="🌐 Translation Result", color=discord.Color.blue())
-                    embed.add_field(name="Original Text", value=text, inline=False)
-                    embed.add_field(name=f"Translated ({language.capitalize()})", value=translated_text, inline=False)
-                    embed.set_footer(text=f"Requested by {ctx.author.name}")
-                    
-                    await ctx.send(embed=embed)
-                else:
-                    await ctx.send(f"❌ Translation server returned error code `{response.status}`. Please try again.")
-    except Exception as e:
-        await ctx.send(f"❌ Failed to translate text. Error: `{e}`")
+        updated_msg = await interaction.channel.fetch_message(message.id)
+    except discord.NotFound:
+        return  # Giveaway was deleted or canceled
 
-@translate_prefix.error
-async def translate_error(ctx, error):
-    if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("⚠️ Usage format: `!translate <language> <text>`\nExample: `!translate french Hello world`", delete_after=10)
-
-@bot.command(name="clear")
-async def clear(ctx, amount: int = 5):
-    if not ctx.author.guild_permissions.manage_messages:
-        await ctx.send("❌ You do not have permission to use this command.", delete_after=5)
+    reaction = discord.utils.get(updated_msg.reactions, emoji="🎉")
+    if not reaction:
+        await interaction.channel.send(f"❌ Giveaway for **{prize}** ended, but no reactions were found.")
         return
-    await ctx.message.delete()
-    deleted = await ctx.channel.purge(limit=amount)
-    await ctx.send(f"🧹 Successfully deleted {len(deleted)} messages.", delete_after=5)
 
-@clear.error
-async def clear_error(ctx, error):
-    if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("⚠️ Please specify how many messages to clear, e.g., `!clear 10`", delete_after=5)
+    users = [user async for user in reaction.users() if not user.bot]
+    if not users:
+        await interaction.channel.send(f"❌ Giveaway for **{prize}** ended, but no valid entries were made.")
+        return
 
-# ==================== SETUP & CONFIG SLASH COMMANDS ====================
+    num_winners = min(len(users), winners)
+    winning_users = random.sample(users, num_winners)
+    winner_mentions = ", ".join([u.mention for u in winning_users])
+
+    win_embed = discord.Embed(title="🎉 GIVEAWAY ENDED! 🎉", description=f"**Prize:** {prize}\n**Winners:** {winner_mentions}\n**Hosted by:** {interaction.user.mention}", color=discord.Color.green())
+    await updated_msg.edit(embed=win_embed)
+    await interaction.channel.send(f"🎊 Congratulations {winner_mentions}! You won **{prize}**!")
+
+@bot.tree.command(name="greroll", description="Reroll winners for a giveaway message ID")
+@app_commands.checks.has_permissions(manage_events=True)
+async def greroll(interaction: discord.Interaction, message_id: str):
+    await interaction.response.defer()
+    try:
+        msg = await interaction.channel.fetch_message(int(message_id))
+    except (discord.NotFound, ValueError):
+        await interaction.followup.send("❌ Could not find a message with that ID in this channel.", ephemeral=True)
+        return
+
+    reaction = discord.utils.get(msg.reactions, emoji="🎉")
+    if not reaction:
+        await interaction.followup.send("❌ No `🎉` reactions found on that message.", ephemeral=True)
+        return
+
+    users = [user async for user in reaction.users() if not user.bot]
+    if not users:
+        await interaction.followup.send("❌ No valid user entries found to reroll.", ephemeral=True)
+        return
+
+    new_winner = random.choice(users)
+    await interaction.followup.send(f"🎉 New Winner Rerolled: {new_winner.mention}! Congratulations!")
+
+@bot.tree.command(name="gstop", description="Cancel and stop an active giveaway")
+@app_commands.checks.has_permissions(manage_events=True)
+async def gstop(interaction: discord.Interaction, message_id: str):
+    await interaction.response.defer()
+    try:
+        msg = await interaction.channel.fetch_message(int(message_id))
+        cancel_embed = discord.Embed(title="🛑 GIVEAWAY CANCELED 🛑", description="This giveaway has been canceled by an administrator.", color=discord.Color.red())
+        await msg.edit(embed=cancel_embed)
+        await interaction.followup.send("✅ Giveaway canceled successfully.", ephemeral=True)
+    except (discord.NotFound, ValueError):
+        await interaction.followup.send("❌ Could not find a message with that ID in this channel.", ephemeral=True)
+
+# ==================== INVITE TRACKER COMMANDS ====================
+
+@bot.tree.command(name="setinvitracker", description="Choose the channel for invite tracking alerts")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def setinvitracker(interaction: discord.Interaction, channel: discord.TextChannel):
+    data = load_json(CONFIG_FILE)
+    str_guild_id = str(interaction.guild_id)
+    if str_guild_id not in data:
+        data[str_guild_id] = {}
+    data[str_guild_id]["invite_channel"] = channel.id
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"✅ Invite tracking channel set to {channel.mention}", ephemeral=True)
+
+@bot.tree.command(name="removeinvitracker", description="Disable and stop invite tracking")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def removeinvitracker(interaction: discord.Interaction):
+    data = load_json(CONFIG_FILE)
+    str_guild_id = str(interaction.guild_id)
+    if str_guild_id in data and "invite_channel" in data[str_guild_id]:
+        del data[str_guild_id]["invite_channel"]
+        save_json(CONFIG_FILE, data)
+        await interaction.response.send_message("✅ Invite tracking has been disabled.", ephemeral=True)
+    else:
+        await interaction.response.send_message("⚠️ No invite tracker channel is currently set.", ephemeral=True)
+
+# ==================== SETUP & CONFIG COMMANDS ====================
 
 @bot.tree.command(name="setwelcome", description="Choose the channel for welcome messages")
 @app_commands.checks.has_permissions(manage_channels=True)
@@ -140,194 +226,4 @@ async def removewelcome(interaction: discord.Interaction):
 
 @bot.tree.command(name="setleave", description="Choose the channel for leave messages")
 @app_commands.checks.has_permissions(manage_channels=True)
-async def setleave(interaction: discord.Interaction, channel: discord.TextChannel):
-    data = load_json(CONFIG_FILE)
-    str_guild_id = str(interaction.guild_id)
-    if str_guild_id not in data:
-        data[str_guild_id] = {}
-    data[str_guild_id]["leave_channel"] = channel.id
-    save_json(CONFIG_FILE, data)
-    await interaction.response.send_message(f"✅ Leave channel set to {channel.mention}", ephemeral=True)
-
-@bot.tree.command(name="removeleave", description="Disable and remove the leave channel")
-@app_commands.checks.has_permissions(manage_channels=True)
-async def removeleave(interaction: discord.Interaction):
-    data = load_json(CONFIG_FILE)
-    str_guild_id = str(interaction.guild_id)
-    if str_guild_id in data and "leave_channel" in data[str_guild_id]:
-        del data[str_guild_id]["leave_channel"]
-        save_json(CONFIG_FILE, data)
-        await interaction.response.send_message("✅ Leave messages have been disabled.", ephemeral=True)
-    else:
-        await interaction.response.send_message("⚠️ No leave channel is currently set.", ephemeral=True)
-
-@bot.tree.command(name="setlevel", description="Choose the channel for level-up announcements")
-@app_commands.checks.has_permissions(manage_channels=True)
-async def setlevel(interaction: discord.Interaction, channel: discord.TextChannel):
-    data = load_json(CONFIG_FILE)
-    str_guild_id = str(interaction.guild_id)
-    if str_guild_id not in data:
-        data[str_guild_id] = {}
-    data[str_guild_id]["level_channel"] = channel.id
-    save_json(CONFIG_FILE, data)
-    await interaction.response.send_message(f"✅ Level-up channel set to {channel.mention}", ephemeral=True)
-
-@bot.tree.command(name="enablelevels", description="Turn on the server leveling system")
-@app_commands.checks.has_permissions(manage_channels=True)
-async def enablelevels(interaction: discord.Interaction):
-    data = load_json(CONFIG_FILE)
-    str_guild_id = str(interaction.guild_id)
-    if str_guild_id not in data:
-        data[str_guild_id] = {}
-    data[str_guild_id]["levels_enabled"] = True
-    save_json(CONFIG_FILE, data)
-    await interaction.response.send_message("✅ Leveling system has been **enabled**!", ephemeral=True)
-
-@bot.tree.command(name="disablelevels", description="Turn off and disable the server leveling system")
-@app_commands.checks.has_permissions(manage_channels=True)
-async def disablelevels(interaction: discord.Interaction):
-    data = load_json(CONFIG_FILE)
-    str_guild_id = str(interaction.guild_id)
-    if str_guild_id in data:
-        data[str_guild_id]["levels_enabled"] = False
-        save_json(CONFIG_FILE, data)
-    await interaction.response.send_message("❌ Leveling system has been **disabled**.", ephemeral=True)
-
-# ==================== EVENTS (Welcome, Leave & Levels) ====================
-
-@bot.event
-async def on_member_join(member: discord.Member):
-    data = load_json(CONFIG_FILE)
-    str_guild_id = str(member.guild.id)
-    if str_guild_id in data and "welcome_channel" in data[str_guild_id]:
-        channel_id = data[str_guild_id]["welcome_channel"]
-        channel = member.guild.get_channel(channel_id)
-        if channel:
-            await channel.send(f"👋 Welcome to the server, {member.mention}! We're glad to have you here.")
-
-@bot.event
-async def on_member_remove(member: discord.Member):
-    data = load_json(CONFIG_FILE)
-    str_guild_id = str(member.guild.id)
-    if str_guild_id in data and "leave_channel" in data[str_guild_id]:
-        channel_id = data[str_guild_id]["leave_channel"]
-        channel = member.guild.get_channel(channel_id)
-        if channel:
-            await channel.send(f"👋 **{member.name}** has left the server.")
-
-@bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot or not message.guild:
-        return
-
-    config_data = load_json(CONFIG_FILE)
-    guild_id = str(message.guild.id)
-    
-    if guild_id in config_data and config_data[guild_id].get("levels_enabled", False):
-        levels_data = load_json(LEVELS_FILE)
-        user_id = str(message.author.id)
-
-        if guild_id not in levels_data:
-            levels_data[guild_id] = {}
-        if user_id not in levels_data[guild_id]:
-            levels_data[guild_id][user_id] = {"xp": 0, "level": 1}
-
-        user_data = levels_data[guild_id][user_id]
-        user_data["xp"] += 10
-        
-        next_level_xp = user_data["level"] * 100
-        if user_data["xp"] >= next_level_xp:
-            user_data["level"] += 1
-            user_data["xp"] = 0
-            
-            announcement_channel = message.channel
-            if "level_channel" in config_data[guild_id]:
-                custom_chan = message.guild.get_channel(config_data[guild_id]["level_channel"])
-                if custom_chan:
-                    announcement_channel = custom_chan
-
-            await announcement_channel.send(f"🎉 Congrats {message.author.mention}, you leveled up to **Level {user_data['level']}**!")
-
-        save_json(LEVELS_FILE, levels_data)
-
-    await bot.process_commands(message)
-
-# ==================== MODERATION SLASH COMMANDS ====================
-
-@bot.tree.command(name="kick", description="Kick a member from the server")
-@app_commands.checks.has_permissions(kick_members=True)
-async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-    await interaction.response.defer()
-    await member.kick(reason=reason)
-    await interaction.followup.send(f"✅ {member.mention} was kicked. Reason: {reason}")
-
-@bot.tree.command(name="ban", description="Ban a member from the server")
-@app_commands.checks.has_permissions(ban_members=True)
-async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-    await interaction.response.defer()
-    await member.ban(reason=reason)
-    await interaction.followup.send(f"⛔ {member.mention} was banned. Reason: {reason}")
-
-@bot.tree.command(name="timeout", description="Timeout a member for a set duration and unit")
-@app_commands.choices(unit=[
-    app_commands.Choice(name="Seconds", value="seconds"),
-    app_commands.Choice(name="Minutes", value="minutes"),
-    app_commands.Choice(name="Hours", value="hours"),
-    app_commands.Choice(name="Days", value="days")
-])
-@app_commands.checks.has_permissions(moderate_members=True)
-async def timeout(interaction: discord.Interaction, member: discord.Member, duration: int, unit: str, reason: str = "No reason provided"):
-    await interaction.response.defer()
-    
-    if unit == "seconds":
-        delta = datetime.timedelta(seconds=duration)
-    elif unit == "minutes":
-        delta = datetime.timedelta(minutes=duration)
-    elif unit == "hours":
-        delta = datetime.timedelta(hours=duration)
-    elif unit == "days":
-        delta = datetime.timedelta(days=duration)
-    else:
-        delta = datetime.timedelta(minutes=duration)
-
-    await member.timeout(delta, reason=reason)
-    await interaction.followup.send(f"🔇 {member.mention} has been timed out for {duration} {unit}. Reason: {reason}")
-
-@bot.tree.command(name="untimeout", description="Remove timeout from a member")
-@app_commands.checks.has_permissions(moderate_members=True)
-async def untimeout(interaction: discord.Interaction, member: discord.Member):
-    await interaction.response.defer()
-    await member.timeout(None)
-    await interaction.followup.send(f"🔊 Timeout removed for {member.mention}.")
-
-@bot.tree.command(name="warn", description="Issue a warning to a member")
-@app_commands.checks.has_permissions(moderate_members=True)
-async def warn(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-    await interaction.response.defer()
-    try:
-        await member.send(f"⚠️ You have been warned in **{interaction.guild.name}**. Reason: {reason}")
-    except discord.Forbidden:
-        pass
-    await interaction.followup.send(f"⚠️ {member.mention} has been warned. Reason: {reason}")
-
-# Error Handler
-@kick.error
-@ban.error
-@timeout.error
-@untimeout.error
-@warn.error
-@setwelcome.error
-@removewelcome.error
-@setleave.error
-@removeleave.error
-@setlevel.error
-@enablelevels.error
-@disablelevels.error
-async def on_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.MissingPermissions):
-        if not interaction.response.is_done():
-            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ You do not have permission to use this command.", ephemeral=True)
-
-bot.run(os.environ.get("DISCORD_TOKEN"))
+async def setleave(interaction: discord.
