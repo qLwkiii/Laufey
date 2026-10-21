@@ -370,7 +370,113 @@ async def messages_cmd(interaction: discord.Interaction, member: discord.Member 
     embed.add_field(name="⭐ Level", value=str(user_data["level"]), inline=True)
     embed.add_field(name="✨ XP", value=str(user_data["xp"]), inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+# ==================== LEVELING & XP SYSTEM COMMANDS ====================
 
+@bot.tree.command(name="rank", description="Check your or another member's current rank and level")
+async def rank_cmd(interaction: discord.Interaction, member: discord.Member = None):
+    target = member or interaction.user
+    levels = load_json(LEVELS_FILE)
+    gid = str(interaction.guild_id)
+    uid = str(target.id)
+    user_data = levels.get(gid, {}).get(uid, {"xp": 0, "level": 1})
+    
+    embed = discord.Embed(title=f"📊 Rank Card — {target.name}", color=discord.Color.blue())
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(name="⭐ Level", value=f"**{user_data['level']}**", inline=True)
+    embed.add_field(name="✨ Current XP", value=f"**{user_data['xp']} / {user_data['level'] * 100}**", inline=True)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="level", description="Check current level status")
+async def level_cmd(interaction: discord.Interaction, member: discord.Member = None):
+    await rank_cmd(interaction, member)
+
+@bot.tree.command(name="xp", description="Check current XP total")
+async def xp_cmd(interaction: discord.Interaction, member: discord.Member = None):
+    await rank_cmd(interaction, member)
+
+@bot.tree.command(name="leaderboard", description="Show top members on the server XP leaderboard")
+async def leaderboard_cmd(interaction: discord.Interaction):
+    levels = load_json(LEVELS_FILE)
+    gid = str(interaction.guild_id)
+    guild_data = levels.get(gid, {})
+    
+    if not guild_data:
+        await interaction.response.send_message("❌ No XP data recorded yet for this server.", ephemeral=True)
+        return
+        
+    sorted_users = sorted(guild_data.items(), key=lambda x: (x[1]["level"], x[1]["xp"]), reverse=True)[:10]
+    
+    desc = ""
+    for i, (uid, stats) in enumerate(sorted_users, 1):
+        user = interaction.guild.get_member(int(uid))
+        name = user.name if user else f"User ID {uid}"
+        desc += f"**#{i}** {name} — Level **{stats['level']}** ({stats['xp']} XP)\n"
+        
+    embed = discord.Embed(title="🏆 Server Level Leaderboard", description=desc, color=discord.Color.gold())
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="add-xp", description="Add XP to a member")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def add_xp(interaction: discord.Interaction, member: discord.Member, amount: int):
+    levels = load_json(LEVELS_FILE)
+    gid = str(interaction.guild_id)
+    uid = str(member.id)
+    if gid not in levels: levels[gid] = {}
+    if uid not in levels[gid]: levels[gid][uid] = {"xp": 0, "level": 1}
+    
+    levels[gid][uid]["xp"] += amount
+    save_json(LEVELS_FILE, levels)
+    await interaction.response.send_message(f"✅ Added **{amount} XP** to {member.mention}.", ephemeral=True)
+
+@bot.tree.command(name="remove-xp", description="Remove XP from a member")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def remove_xp(interaction: discord.Interaction, member: discord.Member, amount: int):
+    levels = load_json(LEVELS_FILE)
+    gid = str(interaction.guild_id)
+    uid = str(member.id)
+    if gid not in levels: levels[gid] = {}
+    if uid not in levels[gid]: levels[gid][uid] = {"xp": 0, "level": 1}
+    
+    levels[gid][uid]["xp"] = max(0, levels[gid][uid]["xp"] - amount)
+    save_json(LEVELS_FILE, levels)
+    await interaction.response.send_message(f"✅ Removed **{amount} XP** from {member.mention}.", ephemeral=True)
+
+@bot.tree.command(name="reset-xp", description="Reset a member's level and XP")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def reset_xp(interaction: discord.Interaction, member: discord.Member):
+    levels = load_json(LEVELS_FILE)
+    gid = str(interaction.guild_id)
+    uid = str(member.id)
+    if gid in levels and uid in levels[gid]:
+        levels[gid][uid] = {"xp": 0, "level": 1}
+        save_json(LEVELS_FILE, levels)
+    await interaction.response.send_message(f"🔄 Reset level and XP for {member.mention}.", ephemeral=True)
+
+@bot.tree.command(name="set-level-reward", description="Set a role reward for reaching a specific level")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def set_level_reward(interaction: discord.Interaction, level: int, role: discord.Role):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    if "level_rewards" not in data[gid]: data[gid]["level_rewards"] = {}
+    
+    data[gid]["level_rewards"][str(level)] = role.id
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"🎁 Reward set! Reaching **Level {level}** now grants {role.mention}.", ephemeral=True)
+
+@bot.tree.command(name="level-rewards", description="View configured level role rewards")
+async def level_rewards(interaction: discord.Interaction):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    rewards = data.get(gid, {}).get("level_rewards", {})
+    
+    if not rewards:
+        await interaction.response.send_message("❌ No level role rewards configured yet.", ephemeral=True)
+        return
+        
+    desc = "\n".join([f"• **Level {lvl}**: <@&{rid}>" for lvl, rid in sorted(rewards.items(), key=lambda x: int(x[0]))])
+    embed = discord.Embed(title="🎁 Level Role Rewards", description=desc, color=discord.Color.purple())
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 # ==================== BOT EXECUTION ====================
 token = os.environ.get("DISCORD_TOKEN")
 if token:
