@@ -187,10 +187,10 @@ async def giveaway(interaction: discord.Interaction, prize: str, duration_minute
     await interaction.response.send_message(embed=embed)
     msg = await interaction.original_response()
     await msg.add_reaction("🎉")
-    # ==================== TICKET MANAGEMENT SYSTEM ====================
-@bot.tree.command(name="ticket", description="Ticket management base command group")
-async def ticket(interaction: discord.Interaction):
-    pass
+
+# ==================== TICKET MANAGEMENT SYSTEM ====================
+
+ticket = app_commands.Group(name="ticket", description="Ticket management commands")
 
 @ticket.command(name="setup", description="Setup the ticket panel channel")
 @app_commands.checks.has_permissions(manage_guild=True)
@@ -209,6 +209,8 @@ async def ticket_panel(interaction: discord.Interaction):
     await interaction.channel.send(embed=embed)
     await interaction.response.send_message("✅ Ticket panel sent!", ephemeral=True)
 
+# Register the ticket group to the bot tree
+bot.tree.add_command(ticket)
 
 # ==================== LEVELING & XP SYSTEM ====================
 @bot.tree.command(name="rank", description="Check your or another member's current rank and level")
