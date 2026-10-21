@@ -654,6 +654,212 @@ async def messages_cmd(interaction: discord.Interaction, member: discord.Member 
     embed.add_field(name="⭐ Level", value=str(user_data["level"]), inline=True)
     embed.add_field(name="✨ XP", value=str(user_data["xp"]), inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+    # ==================== ADVANCED TICKETS, MOD & CONFIGS ====================
+
+ticket_group = app_commands.Group(name="ticket", description="Complete ticket management system")
+
+@ticket_group.command(name="setup", description="Set the staff role (and optional category) and post the ticket panel")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def ticket_setup(interaction: discord.Interaction, staff_role: discord.Role, category: discord.CategoryChannel = None):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    data[gid]["ticket_staff_role"] = staff_role.id
+    if category: data[gid]["ticket_category"] = category.id
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"✅ Ticket setup complete! Staff role: {staff_role.mention}", ephemeral=True)
+
+@ticket_group.command(name="title", description="Set the title of the ticket panel")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def ticket_title(interaction: discord.Interaction, title: str):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    data[gid]["ticket_title"] = title
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"✅ Ticket panel title set to: `{title}`", ephemeral=True)
+
+@ticket_group.command(name="text", description="Set the description text of the ticket panel")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def ticket_text(interaction: discord.Interaction, text: str):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    data[gid]["ticket_text"] = text
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message("✅ Ticket panel text updated!", ephemeral=True)
+
+@ticket_group.command(name="style", description="Show departments as buttons or as a dropdown")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def ticket_style(interaction: discord.Interaction, style: str):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    data[gid]["ticket_style"] = style.lower()
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"✅ Ticket panel style set to `{style}`.", ephemeral=True)
+
+@ticket_group.command(name="add", description="Add a ticket department (emoji first)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def ticket_add(interaction: discord.Interaction, name: str, emoji: str = "🎫"):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    if "ticket_departments" not in data[gid]: data[gid]["ticket_departments"] = []
+    data[gid]["ticket_departments"].append({"name": name, "emoji": emoji})
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"✅ Added department: {emoji} {name}", ephemeral=True)
+
+@ticket_group.command(name="edit", description="Change a department's name, emoji, description")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def ticket_edit(interaction: discord.Interaction, index: int, new_name: str):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    depts = data.get(gid, {}).get("ticket_departments", [])
+    if 0 <= index - 1 < len(depts):
+        depts[index - 1]["name"] = new_name
+        save_json(CONFIG_FILE, data)
+        await interaction.response.send_message(f"✅ Department #{index} renamed to `{new_name}`.", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Invalid department index.", ephemeral=True)
+
+@ticket_group.command(name="remove", description="Remove a department by number or name")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def ticket_remove(interaction: discord.Interaction, index: int):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    depts = data.get(gid, {}).get("ticket_departments", [])
+    if 0 <= index - 1 < len(depts):
+        removed = depts.pop(index - 1)
+        save_json(CONFIG_FILE, data)
+        await interaction.response.send_message(f"🗑️ Removed department `{removed['name']}`.", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Invalid department number.", ephemeral=True)
+
+@ticket_group.command(name="list", description="Show all departments and the current ticket setup")
+async def ticket_list(interaction: discord.Interaction):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    depts = data.get(gid, {}).get("ticket_departments", [])
+    if not depts:
+        await interaction.response.send_message("❌ No ticket departments configured yet.", ephemeral=True)
+        return
+    desc = "\n".join([f"{i+1}. {d.get('emoji', '🎫')} **{d['name']}**" for i, d in enumerate(depts)])
+    embed = discord.Embed(title="🎟️ Ticket Departments", description=desc, color=discord.Color.blue())
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# Ticket Panel Button View
+class TicketPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Create Ticket", style=discord.ButtonStyle.green, custom_id="open_ticket_general", emoji="🎫")
+    async def create_ticket_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        data = load_json(CONFIG_FILE)
+        gid = str(guild.id)
+        staff_role_id = data.get(gid, {}).get("ticket_staff_role")
+        cat_id = data.get(gid, {}).get("ticket_category")
+        category = guild.get_channel(cat_id) if cat_id else None
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+        }
+        if staff_role_id:
+            staff_role = guild.get_role(staff_role_id)
+            if staff_role: overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+        ticket_channel = await guild.create_text_channel(
+            name=f"ticket-{interaction.user.name}",
+            category=category,
+            overwrites=overwrites
+        )
+        await interaction.response.send_message(f"✅ Ticket opened: {ticket_channel.mention}", ephemeral=True)
+        await ticket_channel.send(f"👋 Hello {interaction.user.mention}, staff will assist you shortly!")
+
+@ticket_group.command(name="panel", description="Post the ticket panel in this channel")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def ticket_panel(interaction: discord.Interaction):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    t_title = data.get(gid, {}).get("ticket_title", "📩 Support Tickets")
+    t_text = data.get(gid, {}).get("ticket_text", "Click the button below to open a ticket with staff.")
+    
+    embed = discord.Embed(title=t_title, description=t_text, color=discord.Color.blurple())
+    await interaction.channel.send(embed=embed, view=TicketPanelView())
+    await interaction.response.send_message("✅ Ticket panel posted!", ephemeral=True)
+
+bot.tree.add_command(ticket_group)
+
+# --- Unban, Transcripts & Warn Commands ---
+
+@bot.tree.command(name="unban", description="Unban a user by their ID")
+@app_commands.checks.has_permissions(ban_members=True)
+async def unban_cmd(interaction: discord.Interaction, user_id: str, reason: str = "No reason"):
+    await interaction.response.defer()
+    try:
+        user = await bot.fetch_user(int(user_id))
+        await interaction.guild.unban(user, reason=reason)
+        await interaction.followup.send(f"✅ Unbanned **{user.name}**.")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed to unban user: {e}", ephemeral=True)
+
+@bot.tree.command(name="settranscripts", description="Choose where closed-ticket transcripts are posted")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def settranscripts(interaction: discord.Interaction, channel: discord.TextChannel):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    data[gid]["transcript_channel"] = channel.id
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"✅ Transcripts channel set to {channel.mention}", ephemeral=True)
+
+@bot.tree.command(name="setwarnexpire", description="How long a warning counts (30d, 1mo, off)")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def setwarnexpire(interaction: discord.Interaction, duration: str):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    data[gid]["warn_expire"] = duration
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"✅ Warn expiration set to: `{duration}`", ephemeral=True)
+
+# --- Utility & Invite Info Commands ---
+
+@bot.tree.command(name="invite", description="Get the link to add this bot to a server")
+async def invite_bot(interaction: discord.Interaction):
+    app_info = await bot.application_info()
+    url = f"https://discord.com/api/oauth2/authorize?client_id={app_info.id}&permissions=8&scope=bot%20applications.commands"
+    embed = discord.Embed(title="🤖 Invite Laufey", description=f"[Click here to add Laufey to your server!]({url})", color=discord.Color.blurple())
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="invites", description="Check how many invites a user has")
+async def check_invites(interaction: discord.Interaction, member: discord.Member = None):
+    target = member or interaction.user
+    await interaction.response.send_message(f"📊 Tracking invite statistics for **{target.name}**.", ephemeral=True)
+
+@bot.tree.command(name="inviter", description="Find out who invited a member")
+async def inviter_cmd(interaction: discord.Interaction, member: discord.Member):
+    await interaction.response.send_message(f"🔍 Checking invite records for {member.mention}...", ephemeral=True)
+
+@bot.tree.command(name="invited", description="List members a user invited who are still in the server")
+async def invited_cmd(interaction: discord.Interaction, member: discord.Member = None):
+    target = member or interaction.user
+    await interaction.response.send_message(f"📜 Showing users invited by **{target.name}**.", ephemeral=True)
+
+@bot.tree.command(name="messages", description="Check a member's message count")
+async def messages_cmd(interaction: discord.Interaction, member: discord.Member = None):
+    target = member or interaction.user
+    levels = load_json(LEVELS_FILE)
+    gid = str(interaction.guild_id)
+    uid = str(target.id)
+    user_data = levels.get(gid, {}).get(uid, {"xp": 0, "level": 1})
+    
+    embed = discord.Embed(title=f"📈 Stats for {target.name}", color=discord.Color.green())
+    embed.add_field(name="⭐ Level", value=str(user_data["level"]), inline=True)
+    embed.add_field(name="✨ XP", value=str(user_data["xp"]), inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 token = os.environ.get("DISCORD_TOKEN")
 if token: 
     bot.run(token)
