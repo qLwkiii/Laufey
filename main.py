@@ -301,46 +301,61 @@ async def level_rewards(interaction: discord.Interaction):
     embed = discord.Embed(title="🎁 Level Role Rewards", description=desc, color=discord.Color.purple())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+# ==============================================================================
+# ADVANCED INVITE TRACKING SYSTEM (Falcon Style)
+# ==============================================================================
 
-# ==================== ADVANCED INVITE TRACKING SYSTEM ====================
-@bot.tree.command(name="check-invites", description="Check detailed invite statistics for a user")
-async def check_invites_cmd(interaction: discord.Interaction, member: discord.Member = None):
+def create_falcon_invite_embed(target: discord.User | discord.Member) -> discord.Embed:
+    # Stats variables — ready for database integration
+    joins = 0
+    left = 0
+    fake = 0
+    rejoins = 0
+    total = max(0, joins - left - fake)
+    
+    embed = discord.Embed(
+        title="Invite log",
+        description=(
+            f"**`>>` {target.mention} has {total} invites**\n\n"
+            f"**Joins :** `{joins}`\n"
+            f"**Left :** `{left}`\n"
+            f"**Fake :** `{fake}`\n"
+            f"**Rejoins :** `{rejoins}` `(7d)`\n\n"
+            f"▸ Discover new events and giveaways!\n"
+            f"▸ Customize this command in premium!"
+        ),
+        color=discord.Color.from_str("#1abc9c")  # Matching Falcon's Cyan sidebar color
+    )
+    
+    if hasattr(target, 'display_avatar'):
+        embed.set_thumbnail(url=target.display_avatar.url)
+        
+    return embed
+
+
+# Slash Command: /invites
+@bot.tree.command(name="invites", description="Check detailed invite statistics for a user")
+async def invites_slash(interaction: discord.Interaction, member: discord.Member = None):
     target = member or interaction.user
-    regular, left, fake, bonus = 0, 0, 0, 0
-    total = max(0, regular + bonus - left - fake)
-    embed = discord.Embed(title=f"📥 Invite Statistics — {target.name}", description=f"Showing full invite history and status metrics for {target.mention}.", color=discord.Color.from_rgb(88, 101, 242))
-    embed.set_thumbnail(url=target.display_avatar.url)
-    embed.add_field(name="✨ Total Invites", value=f"```yaml\n{total} Invites\n```", inline=False)
-    embed.add_field(name="✅ Regular", value=f"**{regular}**", inline=True)
-    embed.add_field(name="❌ Left", value=f"**{left}**", inline=True)
-    embed.add_field(name="🤖 Fake / Alts", value=f"**{fake}**", inline=True)
-    embed.add_field(name="🎁 Bonus", value=f"**{bonus}**", inline=True)
-    progress_bar = "🟦" * min(total, 10) + "⬛" * (10 - min(total, 10))
-    embed.add_field(name="📈 Milestone Progress", value=f"{progress_bar} (`{total}/10`)", inline=False)
-    embed.set_footer(text=f"Requested by {interaction.user.name} • Laufey Invite Manager", icon_url=interaction.user.display_avatar.url)
+    embed = create_falcon_invite_embed(target)
+    embed.set_footer(text=f"Requested by {interaction.user.name} | Today at {discord.utils.utcnow().strftime('%I:%M %p')}")
     await interaction.response.send_message(embed=embed)
 
+
+# Prefix Command: !invites or !invites @user
 @bot.command(name="invites")
 async def invites_prefix_cmd(ctx, member: discord.Member = None):
     target = member or ctx.author
-    regular, left, fake, bonus = 0, 0, 0, 0
-    total = max(0, regular + bonus - left - fake)
-    embed = discord.Embed(title=f"📥 Invite Statistics — {target.name}", description=f"Showing full invite history and status metrics for {target.mention}.", color=discord.Color.from_rgb(88, 101, 242))
-    embed.set_thumbnail(url=target.display_avatar.url)
-    embed.add_field(name="✨ Total Invites", value=f"```yaml\n{total} Invites\n```", inline=False)
-    embed.add_field(name="✅ Regular", value=f"**{regular}**", inline=True)
-    embed.add_field(name="❌ Left", value=f"**{left}**", inline=True)
-    embed.add_field(name="🤖 Fake / Alts", value=f"**{fake}**", inline=True)
-    embed.add_field(name="🎁 Bonus", value=f"**{bonus}**", inline=True)
-    progress_bar = "🟦" * min(total, 10) + "⬛" * (10 - min(total, 10))
-    embed.add_field(name="📈 Milestone Progress", value=f"{progress_bar} (`{total}/10`)", inline=False)
-    embed.set_footer(text=f"Requested by {ctx.author.name} • Laufey Invite Manager", icon_url=ctx.author.display_avatar.url)
+    embed = create_falcon_invite_embed(target)
+    embed.set_footer(text=f"Requested by {ctx.author.name} | Today at {discord.utils.utcnow().strftime('%I:%M %p')}")
     await ctx.send(embed=embed)
+
 
 @bot.tree.command(name="invite-leaderboard", description="Show top inviters in the server")
 async def invite_leaderboard(interaction: discord.Interaction):
     embed = discord.Embed(title="🏆 Server Invite Leaderboard", description="1. **No active stats recorded yet** — 0 Invites", color=discord.Color.gold())
     await interaction.response.send_message(embed=embed)
+
 
 @bot.tree.command(name="invite-rewards", description="View custom invite milestone rewards")
 async def invite_rewards(interaction: discord.Interaction):
@@ -354,6 +369,7 @@ async def invite_rewards(interaction: discord.Interaction):
         embed = discord.Embed(title="🎁 Invite Milestone Rewards", description=desc, color=discord.Color.purple())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+
 @bot.tree.command(name="invite-rewards-set", description="Set a role reward for a milestone number of invites")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def invite_rewards_set(interaction: discord.Interaction, invites: int, role: discord.Role):
@@ -365,15 +381,18 @@ async def invite_rewards_set(interaction: discord.Interaction, invites: int, rol
     save_json(CONFIG_FILE, data)
     await interaction.response.send_message(f"🎁 Invite reward set! Reaching **{invites} invites** will now grant {role.mention}.", ephemeral=True)
 
+
 @bot.tree.command(name="fake-invites", description="Check how many fake/alt invites a user has")
 async def fake_invites(interaction: discord.Interaction, member: discord.Member = None):
     target = member or interaction.user
     await interaction.response.send_message(f"🛡️ **{target.name}** has 0 fake or suspicious invites.", ephemeral=True)
 
+
 @bot.tree.command(name="invite-bonus", description="Add or remove bonus invites for a member")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def invite_bonus(interaction: discord.Interaction, member: discord.Member, amount: int):
     await interaction.response.send_message(f"✨ Successfully adjusted bonus invites for {member.mention} by `{amount}`.", ephemeral=True)
+
 
 @bot.tree.command(name="invite-reset", description="Reset a user's invite count")
 @app_commands.checks.has_permissions(manage_guild=True)
