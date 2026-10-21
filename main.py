@@ -285,8 +285,7 @@ async def gstop(interaction: discord.Interaction, message_id: str):
         await interaction.followup.send("✅ Giveaway canceled.", ephemeral=True)
     except:
         await interaction.followup.send("❌ Message not found.", ephemeral=True)
-
-# ==================== CONFIG & EVENTS ====================
+        # ==================== CONFIG & EVENTS ====================
 
 @bot.tree.command(name="setinvitracker", description="Set invite channel")
 @app_commands.checks.has_permissions(manage_channels=True)
@@ -508,4 +507,13 @@ async def untimeout(interaction: discord.Interaction, member: discord.Member):
 async def warn(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason"):
     await interaction.response.defer()
     try: 
-        await member.send(f"⚠️ Warned in **{interaction.g
+        await member.send(f"⚠️ Warned in **{interaction.guild.name}**: {reason}")
+    except: 
+        pass
+    await interaction.followup.send(f"⚠️ Warned {member.mention}.")
+
+token = os.environ.get("DISCORD_TOKEN")
+if token: 
+    bot.run(token)
+else: 
+    print("❌ Missing DISCORD_TOKEN!")
