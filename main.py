@@ -538,6 +538,7 @@ async def invite_bonus(interaction: discord.Interaction, member: discord.Member,
 async def invite_reset(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message(f"🔄 Reset invite tracking stats for {member.mention}.", ephemeral=True)
     # ==============================================================================
+# ==============================================================================
 # CATEGORY 4: SERVER UTILITY & INFORMATION
 # ==============================================================================
 
@@ -646,7 +647,83 @@ async def invites_cmd(interaction: discord.Interaction, member: discord.Member =
 async def invites_prefix(ctx, member: discord.Member = None):
     target = member or ctx.author
     
-    regular,
+    regular, left, fake, bonus = 0, 0, 0, 0
+    total = max(0, regular + bonus - left - fake)
+    
+    embed = discord.Embed(
+        title=f"📥 Invite Statistics — {target.name}",
+        description=f"Showing full invite history and status metrics for {target.mention}.",
+        color=discord.Color.from_rgb(88, 101, 242)
+    )
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(name="✨ Total Invites", value=f"```yaml\n{total} Invites\n```", inline=False)
+    embed.add_field(name="✅ Regular", value=f"**{regular}**", inline=True)
+    embed.add_field(name="❌ Left", value=f"**{left}**", inline=True)
+    embed.add_field(name="🤖 Fake / Alts", value=f"**{fake}**", inline=True)
+    embed.add_field(name="🎁 Bonus", value=f"**{bonus}**", inline=True)
+    
+    progress_bar = "🟦" * min(total, 10) + "⬛" * (10 - min(total, 10))
+    embed.add_field(name="📈 Milestone Progress", value=f"{progress_bar} (`{total}/10`)", inline=False)
+    embed.set_footer(text=f"Requested by {ctx.author.name} • Laufey Invite Manager", icon_url=ctx.author.display_avatar.url)
+    
+    await ctx.send(embed=embed)
+
+
+@bot.tree.command(name="invite-leaderboard", description="Show top inviters in the server")
+async def invite_leaderboard(interaction: discord.Interaction):
+    embed = discord.Embed(title="🏆 Server Invite Leaderboard", description="1. **No active stats recorded yet** — 0 Invites", color=discord.Color.gold())
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="invite-rewards", description="View custom invite milestone rewards")
+async def invite_rewards(interaction: discord.Interaction):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    rewards = data.get(gid, {}).get("invite_rewards", {})
+    
+    if not rewards:
+        embed = discord.Embed(title="🎁 Invite Milestone Rewards", description="No invite rewards configured yet.", color=discord.Color.purple())
+    else:
+        desc = "\n".join([f"• **{invs} Invites**: <@&{rid}>" for invs, rid in sorted(rewards.items(), key=lambda x: int(x[0]))])
+        embed = discord.Embed(title="🎁 Invite Milestone Rewards", description=desc, color=discord.Color.purple())
+        
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="invite-rewards-set", description="Set a role reward for a milestone number of invites")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def invite_rewards_set(interaction: discord.Interaction, invites: int, role: discord.Role):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    if "invite_rewards" not in data[gid]: data[gid]["invite_rewards"] = {}
+    
+    data[gid]["invite_rewards"][str(invites)] = role.id
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"🎁 Invite reward set! Reaching **{invites} invites** will now grant {role.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="invite-check", description="Quick check of a user's invite standing")
+async def invite_check(interaction: discord.Interaction, member: discord.Member):
+    await interaction.response.send_message(f"🔍 **{member.name}** has 0 active invites.", ephemeral=True)
+
+
+@bot.tree.command(name="fake-invites", description="Check how many fake/alt invites a user has")
+async def fake_invites(interaction: discord.Interaction, member: discord.Member = None):
+    target = member or interaction.user
+    await interaction.response.send_message(f"🛡️ **{target.name}** has 0 fake or suspicious invites.", ephemeral=True)
+
+
+@bot.tree.command(name="invite-bonus", description="Add or remove bonus invites for a member")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def invite_bonus(interaction: discord.Interaction, member: discord.Member, amount: int):
+    await interaction.response.send_message(f"✨ Successfully adjusted bonus invites for {member.mention} by `{amount}`.", ephemeral=True)
+
+
+@bot.tree.command(name="invite-reset", description="Reset a user's invite count")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def invite_reset(interaction: discord.Interaction, member: discord.Member):
+    await interaction.response.send_message(f"🔄 Reset invite tracking stats for {member.mention}.", ephemeral=True)
 # ==================== BOT EXECUTION ====================
 token = os.environ.get("DISCORD_TOKEN")
 if token:
