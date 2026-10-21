@@ -581,6 +581,8 @@ async def antispam_off(interaction: discord.Interaction):
 bot.tree.add_command(antispam_group)
 # ==================== TICKETS & UTILITIES ====================
 
+ticket_group = app_commands.Group(name="ticket", description="Ticket management system")
+
 @ticket_group.command(name="add", description="Add a ticket department (emoji first)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def ticket_add(interaction: discord.Interaction, name: str, emoji: str = "🎫"):
@@ -616,6 +618,8 @@ async def ticket_list(interaction: discord.Interaction):
     desc = "\n".join([f"{i+1}. {d.get('emoji', '🎫')} **{d['name']}**" for i, d in enumerate(depts)])
     embed = discord.Embed(title="🎟️ Ticket Departments", description=desc, color=discord.Color.blue())
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+bot.tree.add_command(ticket_group)
 
 @bot.tree.command(name="invite", description="Get the link to add this bot to a server")
 async def invite_bot(interaction: discord.Interaction):
