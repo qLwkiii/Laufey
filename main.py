@@ -1,7 +1,12 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-import datetime, os, json, asyncio, random, threading
+import datetime
+import os
+import json
+import asyncio
+import random
+import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # --- Web Server ---
@@ -29,13 +34,16 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 CONFIG_FILE = "channels.json"
 LEVELS_FILE = "levels.json"
 GIVEAWAYS_FILE = "giveaways.json"
+STICKY_FILE = "sticky.json"
 INVITES_CACHE = {}
 
 def load_json(filename):
     if os.path.exists(filename):
         with open(filename, "r") as f:
-            try: return json.load(f)
-            except: return {}
+            try:
+                return json.load(f)
+            except:
+                return {}
     return {}
 
 def save_json(filename, data):
@@ -48,8 +56,11 @@ async def on_ready():
     for guild in bot.guilds:
         try:
             invites = await guild.invites()
-            INVITES_CACHE[guild.id] = {inv.code: inv.uses for inv in invites}
-        except: pass
+            INVITES_CACHE[guild.id] = {
+                inv.code: inv.uses for inv in invites
+            }
+        except:
+            pass
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
@@ -58,86 +69,206 @@ async def on_ready():
 
 @bot.event
 async def on_invite_create(invite):
-    if invite.guild.id not in INVITES_CACHE: INVITES_CACHE[invite.guild.id] = {}
+    if invite.guild.id not in INVITES_CACHE:
+        INVITES_CACHE[invite.guild.id] = {}
     INVITES_CACHE[invite.guild.id][invite.code] = invite.uses
 
 @bot.event
 async def on_invite_delete(invite):
-    if invite.guild.id in INVITES_CACHE and invite.code in INVITES_CACHE[invite.guild.id]:
-        del INVITES_CACHE[invite.guild.id][invite.code]
+    if invite.guild.id in INVITES_CACHE:
+        if invite.code in INVITES_CACHE[invite.guild.id]:
+            del INVITES_CACHE[invite.guild.id][invite.code]
 
-# --- GIVEAWAY SYSTEM ---
-@bot.tree.command(name="gstart", description="Start a flexible giveaway")
-async def gstart(interaction: discord.Interaction, duration: int, unit: str, winners: int, prize: str, required_role: discord.Role = None, requirements: str = None):
+# ==================== EMBED, LOCK, STICKY ====================
+
+@bot.tree.command(name="embed", description="Create custom embed")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def embed_cmd(
+    interaction: discord.Interaction, 
+    title: str, 
+    description: str, 
+    color: str = "blue", 
+    channel: discord.TextChannel = None
+):
+    await interaction.response.defer(ephemeral=True)
+    
+    col_map = {
+        "blue": discord.Color.blue(),
+        "red": discord.Color.red(),
+        "green": discord.Color.green(),
+        "gold": discord.Color.gold(),
+        "purple": discord.Color.purple()
+    }
+    embed_color = col_map.get(color.lower(), discord.Color.blue())
+    embed = discord.Embed(
+        title=title, 
+        description=description, 
+        color=embed_color
+    )
+    target = channel or interaction.channel
+    await target.send(embed=embed)
+    await interaction.followup.send("✅ Embed sent!", ephemeral=True)
+
+@bot.tree.command(name="lock", description="Lock current channel")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def lock(interaction: discord.Interaction):
+    await interaction.response.defer()
+    role = interaction.guild.default_role
+    overwrite = interaction.channel.overwrites_for(role)
+    overwrite.send_messages = False
+    await interaction.channel.set_permissions(role, overwrite=overwrite)
+    await interaction.followup.send("🔒 Channel locked.")
+
+@bot.tree.command(name="unlock", description="Unlock current channel")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def unlock(interaction: discord.Interaction):
+    await interaction.response.defer()
+    role = interaction.guild.default_role
+    overwrite = interaction.channel.overwrites_for(role)
+    overwrite.send_messages = True
+    await interaction.channel.set_permissions(role, overwrite=overwrite)
+    await interaction.followup.send("🔓 Channel unlocked.")
+
+@bot.tree.command(name="sticky", description="Create sticky message")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def sticky(interaction: discord.Interaction, *, message: str):
+    await interaction.response.defer()
+    sticky_data = load_json(STICKY_FILE)
+    
+    embed = discord.Embed(
+        title="📌 Sticky Message", 
+        description=message, 
+        color=discord.Color.blurple()
+    )
+    msg = await interaction.channel.send(embed=embed)
+    
+    sticky_data[str(interaction.channel_id)] = {
+        "content": message,
+        "last_msg_id": msg.id
+    }
+    save_json(STICKY_FILE, sticky_data)
+    await interaction.followup.send("✅ Sticky activated!", ephemeral=True)
+
+@bot.tree.command(name="unsticky", description="Remove sticky message")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def unsticky(interaction: discord.Interaction):
+    await interaction.response.defer()
+    sticky_data = load_json(STICKY_FILE)
+    ch_id = str(interaction.channel_id)
+    
+    if ch_id in sticky_data:
+        try:
+            old_id = sticky_data[ch_id]["last_msg_id"]
+            old_msg = await interaction.channel.fetch_message(old_id)
+            await old_msg.delete()
+        except:
+            pass
+        del sticky_data[ch_id]
+        save_json(STICKY_FILE, sticky_data)
+        await interaction.followup.send("✅ Sticky removed.", ephemeral=True)
+    else:
+        await interaction.followup.send("⚠️ No sticky here.", ephemeral=True)
+
+# ==================== GIVEAWAYS ====================
+
+@bot.tree.command(name="gstart", description="Start giveaway")
+async def gstart(
+    interaction: discord.Interaction, 
+    duration: int, 
+    unit: str, 
+    winners: int, 
+    prize: str, 
+    required_role: discord.Role = None, 
+    requirements: str = None
+):
     await interaction.response.defer()
     u = unit.lower().strip()
-    seconds = duration * 86400 if u in ["d","day","days"] else (duration * 3600 if u in ["h","hr","hours"] else (duration * 60 if u in ["m","min","minutes"] else duration))
     
+    if u in ["d", "day", "days"]:
+        seconds = duration * 86400
+    elif u in ["h", "hr", "hours"]:
+        seconds = duration * 3600
+    elif u in ["m", "min", "minutes"]:
+        seconds = duration * 60
+    else:
+        seconds = duration
+
     end_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=seconds)
     timestamp = f"<t:{int(end_time.timestamp())}:R>"
 
-    embed = discord.Embed(title="🎉 GIVEAWAY STARTED! 🎉", color=discord.Color.gold())
+    embed = discord.Embed(title="🎉 GIVEAWAY 🎉", color=discord.Color.gold())
     embed.add_field(name="🎁 Prize", value=f"**{prize}**", inline=False)
     embed.add_field(name="👑 Winners", value=str(winners), inline=True)
     embed.add_field(name="⏳ Ends", value=timestamp, inline=True)
-    embed.add_field(name="🎙️ Hosted By", value=interaction.user.mention, inline=True)
-    if required_role: embed.add_field(name="🔒 Required Role", value=required_role.mention, inline=False)
-    if requirements: embed.add_field(name="📜 Requirements", value=requirements, inline=False)
+    if required_role:
+        embed.add_field(name="🔒 Required Role", value=required_role.mention, inline=False)
+    if requirements:
+        embed.add_field(name="📜 Requirements", value=requirements, inline=False)
     embed.set_footer(text="React with 🎉 to enter!")
 
     message = await interaction.followup.send(embed=embed, wait=True)
     await message.add_reaction("🎉")
 
     giveaways = load_json(GIVEAWAYS_FILE)
-    giveaways[str(message.id)] = {"guild_id": interaction.guild_id, "channel_id": interaction.channel_id, "prize": prize, "winners": winners, "required_role_id": required_role.id if required_role else None, "host_id": interaction.user.id}
+    giveaways[str(message.id)] = {
+        "guild_id": interaction.guild_id,
+        "channel_id": interaction.channel_id,
+        "prize": prize,
+        "winners": winners,
+        "required_role_id": required_role.id if required_role else None
+    }
     save_json(GIVEAWAYS_FILE, giveaways)
 
     await asyncio.sleep(seconds)
 
-    try: updated_msg = await interaction.channel.fetch_message(message.id)
-    except: return
+    try:
+        updated_msg = await interaction.channel.fetch_message(message.id)
+    except:
+        return
 
     reaction = discord.utils.get(updated_msg.reactions, emoji="🎉")
     if not reaction:
-        await interaction.channel.send(f"❌ Giveaway for **{prize}** ended with no entries.")
         return
 
     raw_users = [user async for user in reaction.users() if not user.bot]
-    valid_users = [u for u in raw_users if not required_role or (interaction.guild.get_member(u.id) and required_role in interaction.guild.get_member(u.id).roles)]
+    valid_users = []
+    for u_obj in raw_users:
+        member = interaction.guild.get_member(u_obj.id)
+        if not required_role or (member and required_role in member.roles):
+            valid_users.append(u_obj)
 
     if not valid_users:
-        await interaction.channel.send(f"❌ Giveaway for **{prize}** ended, but no entries met requirements.")
+        await interaction.channel.send(f"❌ Giveaway for **{prize}** ended with no valid entries.")
         return
 
-    num_winners = min(len(valid_users), winners)
-    winning_users = random.sample(valid_users, num_winners)
+    num_w = min(len(valid_users), winners)
+    winning_users = random.sample(valid_users, num_w)
     winner_mentions = ", ".join([u.mention for u in winning_users])
 
-    win_embed = discord.Embed(title="🎉 GIVEAWAY ENDED! 🎉", color=discord.Color.green())
+    win_embed = discord.Embed(title="🎉 GIVEAWAY ENDED 🎉", color=discord.Color.green())
     win_embed.add_field(name="🎁 Prize", value=f"**{prize}**", inline=False)
     win_embed.add_field(name="🏆 Winner(s)", value=winner_mentions, inline=False)
-    win_embed.add_field(name="🎙️ Hosted By", value=interaction.user.mention, inline=False)
-    
     await updated_msg.edit(embed=win_embed)
     await interaction.channel.send(f"🎊 Congratulations {winner_mentions}! You won **{prize}**!")
 
-@bot.tree.command(name="greroll", description="Reroll giveaway winners")
+@bot.tree.command(name="greroll", description="Reroll giveaway")
 @app_commands.checks.has_permissions(manage_events=True)
 async def greroll(interaction: discord.Interaction, message_id: str):
     await interaction.response.defer()
-    try: msg = await interaction.channel.fetch_message(int(message_id))
+    try:
+        msg = await interaction.channel.fetch_message(int(message_id))
     except:
         await interaction.followup.send("❌ Message not found.", ephemeral=True)
         return
 
     reaction = discord.utils.get(msg.reactions, emoji="🎉")
     if not reaction:
-        await interaction.followup.send("❌ No entries found.", ephemeral=True)
+        await interaction.followup.send("❌ No reactions found.", ephemeral=True)
         return
 
     raw_users = [user async for user in reaction.users() if not user.bot]
     if not raw_users:
-        await interaction.followup.send("❌ No valid entries.", ephemeral=True)
+        await interaction.followup.send("❌ No entries.", ephemeral=True)
         return
 
     new_winner = random.choice(raw_users)
@@ -149,14 +280,15 @@ async def gstop(interaction: discord.Interaction, message_id: str):
     await interaction.response.defer()
     try:
         msg = await interaction.channel.fetch_message(int(message_id))
-        cancel_embed = discord.Embed(title="🛑 GIVEAWAY CANCELED 🛑", description="Canceled by admin.", color=discord.Color.red())
+        cancel_embed = discord.Embed(title="🛑 GIVEAWAY CANCELED", color=discord.Color.red())
         await msg.edit(embed=cancel_embed)
         await interaction.followup.send("✅ Giveaway canceled.", ephemeral=True)
     except:
         await interaction.followup.send("❌ Message not found.", ephemeral=True)
 
-# --- INVITES & CONFIG ---
-@bot.tree.command(name="setinvitracker", description="Set channel for invite alerts")
+# ==================== CONFIG & EVENTS ====================
+
+@bot.tree.command(name="setinvitracker", description="Set invite channel")
 @app_commands.checks.has_permissions(manage_channels=True)
 async def setinvitracker(interaction: discord.Interaction, channel: discord.TextChannel):
     data = load_json(CONFIG_FILE)
@@ -166,7 +298,7 @@ async def setinvitracker(interaction: discord.Interaction, channel: discord.Text
     save_json(CONFIG_FILE, data)
     await interaction.response.send_message(f"✅ Invite channel set to {channel.mention}", ephemeral=True)
 
-@bot.tree.command(name="removeinvitracker", description="Disable invite tracking")
+@bot.tree.command(name="removeinvitracker", description="Disable invites")
 @app_commands.checks.has_permissions(manage_channels=True)
 async def removeinvitracker(interaction: discord.Interaction):
     data = load_json(CONFIG_FILE)
@@ -186,7 +318,7 @@ async def setwelcome(interaction: discord.Interaction, channel: discord.TextChan
     save_json(CONFIG_FILE, data)
     await interaction.response.send_message(f"✅ Welcome channel set to {channel.mention}", ephemeral=True)
 
-@bot.tree.command(name="removewelcome", description="Disable welcome channel")
+@bot.tree.command(name="removewelcome", description="Disable welcome")
 @app_commands.checks.has_permissions(manage_channels=True)
 async def removewelcome(interaction: discord.Interaction):
     data = load_json(CONFIG_FILE)
@@ -206,7 +338,7 @@ async def setleave(interaction: discord.Interaction, channel: discord.TextChanne
     save_json(CONFIG_FILE, data)
     await interaction.response.send_message(f"✅ Leave channel set to {channel.mention}", ephemeral=True)
 
-@bot.tree.command(name="removeleave", description="Disable leave channel")
+@bot.tree.command(name="removeleave", description="Disable leave")
 @app_commands.checks.has_permissions(manage_channels=True)
 async def removeleave(interaction: discord.Interaction):
     data = load_json(CONFIG_FILE)
@@ -246,14 +378,14 @@ async def disablelevels(interaction: discord.Interaction):
         save_json(CONFIG_FILE, data)
     await interaction.response.send_message("❌ Levels disabled.", ephemeral=True)
 
-# --- EVENTS ---
 @bot.event
 async def on_member_join(member: discord.Member):
     data = load_json(CONFIG_FILE)
     gid = str(member.guild.id)
     if gid in data and "welcome_channel" in data[gid]:
         ch = member.guild.get_channel(data[gid]["welcome_channel"])
-        if ch: await ch.send(f"👋 Welcome {member.mention}!")
+        if ch: 
+            await ch.send(f"👋 Welcome {member.mention}!")
 
     if gid in data and "invite_channel" in data[gid]:
         ch = member.guild.get_channel(data[gid]["invite_channel"])
@@ -263,9 +395,12 @@ async def on_member_join(member: discord.Member):
                 new_invs = await member.guild.invites()
                 used = next((i for i in new_invs if i.code in cached and i.uses > cached[i.code]), None)
                 INVITES_CACHE[member.guild.id] = {i.code: i.uses for i in new_invs}
-                if used and used.inviter: await ch.send(f"📩 {member.mention} invited by **{used.inviter.mention}** ({used.code}).")
-                else: await ch.send(f"📩 {member.mention} joined.")
-            except: pass
+                if used and used.inviter: 
+                    await ch.send(f"📩 {member.mention} invited by **{used.inviter.mention}**.")
+                else: 
+                    await ch.send(f"📩 {member.mention} joined.")
+            except: 
+                pass
 
 @bot.event
 async def on_member_remove(member: discord.Member):
@@ -273,18 +408,43 @@ async def on_member_remove(member: discord.Member):
     gid = str(member.guild.id)
     if gid in data and "leave_channel" in data[gid]:
         ch = member.guild.get_channel(data[gid]["leave_channel"])
-        if ch: await ch.send(f"👋 **{member.name}** left.")
+        if ch: 
+            await ch.send(f"👋 **{member.name}** left.")
 
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot or not message.guild: return
+    if message.author.bot or not message.guild: 
+        return
+
+    # Sticky
+    sticky_data = load_json(STICKY_FILE)
+    ch_id = str(message.channel.id)
+    if ch_id in sticky_data:
+        s_info = sticky_data[ch_id]
+        try:
+            old_msg = await message.channel.fetch_message(s_info["last_msg_id"])
+            await old_msg.delete()
+        except: 
+            pass
+        embed = discord.Embed(
+            title="📌 Sticky Message", 
+            description=s_info["content"], 
+            color=discord.Color.blurple()
+        )
+        new_sticky = await message.channel.send(embed=embed)
+        s_info["last_msg_id"] = new_sticky.id
+        save_json(STICKY_FILE, sticky_data)
+
+    # Levels
     config = load_json(CONFIG_FILE)
     gid = str(message.guild.id)
     if gid in config and config[gid].get("levels_enabled", False):
         levels = load_json(LEVELS_FILE)
         uid = str(message.author.id)
-        if gid not in levels: levels[gid] = {}
-        if uid not in levels[gid]: levels[gid][uid] = {"xp": 0, "level": 1}
+        if gid not in levels: 
+            levels[gid] = {}
+        if uid not in levels[gid]: 
+            levels[gid][uid] = {"xp": 0, "level": 1}
         
         levels[gid][uid]["xp"] += 10
         if levels[gid][uid]["xp"] >= levels[gid][uid]["level"] * 100:
@@ -293,36 +453,46 @@ async def on_message(message: discord.Message):
             ch = message.guild.get_channel(config[gid].get("level_channel", message.channel.id)) or message.channel
             await ch.send(f"🎉 Congrats {message.author.mention}, level **{levels[gid][uid]['level']}**!")
         save_json(LEVELS_FILE, levels)
+
     await bot.process_commands(message)
 
-# --- MODERATION ---
+# ==================== MODERATION ====================
+
 @bot.command(name="clear")
 async def clear(ctx, amount: int = 5):
-    if not ctx.author.guild_permissions.manage_messages: return
+    if not ctx.author.guild_permissions.manage_messages: 
+        return
     await ctx.message.delete()
     deleted = await ctx.channel.purge(limit=amount)
     await ctx.send(f"🧹 Deleted {len(deleted)} messages.", delete_after=5)
 
-@bot.tree.command(name="kick", description="Kick a member")
+@bot.tree.command(name="kick", description="Kick member")
 @app_commands.checks.has_permissions(kick_members=True)
 async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason"):
     await interaction.response.defer()
     await member.kick(reason=reason)
     await interaction.followup.send(f"✅ Kicked {member.mention}.")
 
-@bot.tree.command(name="ban", description="Ban a member")
+@bot.tree.command(name="ban", description="Ban member")
 @app_commands.checks.has_permissions(ban_members=True)
 async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason"):
     await interaction.response.defer()
     await member.ban(reason=reason)
     await interaction.followup.send(f"⛔ Banned {member.mention}.")
 
-@bot.tree.command(name="timeout", description="Timeout a member")
+@bot.tree.command(name="timeout", description="Timeout member")
 @app_commands.checks.has_permissions(moderate_members=True)
 async def timeout(interaction: discord.Interaction, member: discord.Member, duration: int, unit: str, reason: str = "No reason"):
     await interaction.response.defer()
     u = unit.lower().strip()
-    sec = duration * 86400 if u in ["d","days"] else (duration * 3600 if u in ["h","hours"] else (duration * 60 if u in ["m","minutes"] else duration))
+    if u in ["d", "days"]:
+        sec = duration * 86400
+    elif u in ["h", "hours"]:
+        sec = duration * 3600
+    elif u in ["m", "minutes"]:
+        sec = duration * 60
+    else:
+        sec = duration
     await member.timeout(datetime.timedelta(seconds=sec), reason=reason)
     await interaction.followup.send(f"🔇 Timed out {member.mention}.")
 
@@ -331,16 +501,11 @@ async def timeout(interaction: discord.Interaction, member: discord.Member, dura
 async def untimeout(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.defer()
     await member.timeout(None)
-    await interaction.followup.send(f"🔊 Removed timeout for {member.mention}.")
+    await interaction.followup.send(f"🔊 Timeout removed for {member.mention}.")
 
-@bot.tree.command(name="warn", description="Warn a member")
+@bot.tree.command(name="warn", description="Warn member")
 @app_commands.checks.has_permissions(moderate_members=True)
 async def warn(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason"):
     await interaction.response.defer()
-    try: await member.send(f"⚠️ Warned in **{interaction.guild.name}**: {reason}")
-    except: pass
-    await interaction.followup.send(f"⚠️ Warned {member.mention}.")
-
-token = os.environ.get("DISCORD_TOKEN")
-if token: bot.run(token)
-else: print("❌ Missing DISCORD_TOKEN!")
+    try: 
+        await member.send(f"⚠️ Warned in **{interaction.g
