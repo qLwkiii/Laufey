@@ -169,21 +169,39 @@ async def unsticky(interaction: discord.Interaction):
     else:
         await interaction.followup.send("⚠️ No sticky here.", ephemeral=True)
 
-# ==================== GIVEAWAYS ====================
+# ==================== ADVANCED GIVEAWAY SYSTEM ====================
 
-@bot.tree.command(name="gstart", description="Start giveaway")
-async def gstart(
-    interaction: discord.Interaction, 
-    duration: int, 
-    unit: str, 
-    winners: int, 
-    prize: str, 
-    required_role: discord.Role = None, 
-    requirements: str = None
+giveaway_group = app_commands.Group(name="giveaway", description="Advanced giveaway management")
+
+@giveaway_group.command(name="create", description="Create a highly customizable giveaway")
+@app_commands.checks.has_permissions(manage_events=True)
+async def giveaway_create(
+    interaction: discord.Interaction,
+    duration: int,
+    unit: str,
+    winners: int,
+    prize: str,
+    channel: discord.TextChannel = None,
+    required_roles: discord.Role = None,
+    required_level: int = None,
+    required_daily_messages: int = None,
+    required_weekly_messages: int = None,
+    required_monthly_messages: int = None,
+    required_total_messages: int = None,
+    required_server_boosts: int = None,
+    requirement_bypass_roles: discord.Role = None,
+    image: str = None,
+    thumbnail: str = None,
+    color: str = "gold",
+    end_color: str = "green",
+    claim_time: int = None,
+    giveaway_winners_dm_message: str = None,
+    giveaway_create_message: str = None
 ):
-    await interaction.response.defer()
-    u = unit.lower().strip()
+    await interaction.response.defer(ephemeral=True)
+    target_channel = channel or interaction.channel
     
+    u = unit.lower().strip()
     if u in ["d", "day", "days"]:
         seconds = duration * 86400
     elif u in ["h", "hr", "hours"]:
@@ -196,33 +214,76 @@ async def gstart(
     end_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=seconds)
     timestamp = f"<t:{int(end_time.timestamp())}:R>"
 
-    embed = discord.Embed(title="🎉 GIVEAWAY 🎉", color=discord.Color.gold())
+    col_map = {
+        "gold": discord.Color.gold(),
+        "blue": discord.Color.blue(),
+        "red": discord.Color.red(),
+        "green": discord.Color.green(),
+        "purple": discord.Color.purple()
+    }
+    start_embed_color = col_map.get(color.lower(), discord.Color.gold())
+
+    embed = discord.Embed(title="🎉 GIVEAWAY 🎉", color=start_embed_color)
     embed.add_field(name="🎁 Prize", value=f"**{prize}**", inline=False)
     embed.add_field(name="👑 Winners", value=str(winners), inline=True)
     embed.add_field(name="⏳ Ends", value=timestamp, inline=True)
-    if required_role:
-        embed.add_field(name="🔒 Required Role", value=required_role.mention, inline=False)
-    if requirements:
-        embed.add_field(name="📜 Requirements", value=requirements, inline=False)
+
+    req_list = []
+    if required_roles:
+        req_list.append(f"• Role: {required_roles.mention}")
+    if required_level:
+        req_list.append(f"• Level: {required_level}+")
+    if required_daily_messages:
+        req_list.append(f"• Daily Msgs: {required_daily_messages}+")
+    if required_weekly_messages:
+        req_list.append(f"• Weekly Msgs: {required_weekly_messages}+")
+    if required_monthly_messages:
+        req_list.append(f"• Monthly Msgs: {required_monthly_messages}+")
+    if required_total_messages:
+        req_list.append(f"• Total Msgs: {required_total_messages}+")
+    if required_server_boosts:
+        req_list.append(f"• Server Boosts: {required_server_boosts}+")
+
+    if req_list:
+        embed.add_field(name="📜 Requirements", value="\n".join(req_list), inline=False)
+    if requirement_bypass_roles:
+        embed.add_field(name="🔓 Bypass Role", value=requirement_bypass_roles.mention, inline=False)
+    if claim_time:
+        embed.add_field(name="⏰ Claim Time", value=f"{claim_time} minutes", inline=False)
+
+    if image:
+        embed.set_image(url=image)
+    if thumbnail:
+        embed.set_thumbnail(url=thumbnail)
+
     embed.set_footer(text="React with 🎉 to enter!")
 
-    message = await interaction.followup.send(embed=embed, wait=True)
-    await message.add_reaction("🎉")
+    if giveaway_create_message:
+        await target_channel.send(giveaway_create_message)
+
+    msg = await target_channel.send(embed=embed)
+    await msg.add_reaction("🎉")
 
     giveaways = load_json(GIVEAWAYS_FILE)
-    giveaways[str(message.id)] = {
+    giveaways[str(msg.id)] = {
         "guild_id": interaction.guild_id,
-        "channel_id": interaction.channel_id,
+        "channel_id": target_channel.id,
         "prize": prize,
         "winners": winners,
-        "required_role_id": required_role.id if required_role else None
+        "required_role_id": required_roles.id if required_roles else None,
+        "bypass_role_id": requirement_bypass_roles.id if requirement_bypass_roles else None,
+        "required_level": required_level,
+        "end_color": end_color,
+        "dm_message": giveaway_winners_dm_message
     }
     save_json(GIVEAWAYS_FILE, giveaways)
+
+    await interaction.followup.send(f"✅ Giveaway created in {target_channel.mention}!", ephemeral=True)
 
     await asyncio.sleep(seconds)
 
     try:
-        updated_msg = await interaction.channel.fetch_message(message.id)
+        updated_msg = await target_channel.fetch_message(msg.id)
     except:
         return
 
@@ -232,60 +293,64 @@ async def gstart(
 
     raw_users = [user async for user in reaction.users() if not user.bot]
     valid_users = []
+
+    levels_data = load_json(LEVELS_FILE)
+    gid = str(interaction.guild_id)
+
     for u_obj in raw_users:
         member = interaction.guild.get_member(u_obj.id)
-        if not required_role or (member and required_role in member.roles):
+        if not member:
+            continue
+
+        if requirement_bypass_roles and requirement_bypass_roles in member.roles:
             valid_users.append(u_obj)
+            continue
+
+        if required_roles and required_roles not in member.roles:
+            continue
+
+        if required_level:
+            user_lvl = levels_data.get(gid, {}).get(str(member.id), {}).get("level", 1)
+            if user_lvl < required_level:
+                continue
+
+        valid_users.append(u_obj)
 
     if not valid_users:
-        await interaction.channel.send(f"❌ Giveaway for **{prize}** ended with no valid entries.")
+        await target_channel.send(f"❌ Giveaway for **{prize}** ended with no valid entries.")
         return
 
     num_w = min(len(valid_users), winners)
     winning_users = random.sample(valid_users, num_w)
     winner_mentions = ", ".join([u.mention for u in winning_users])
 
-    win_embed = discord.Embed(title="🎉 GIVEAWAY ENDED 🎉", color=discord.Color.green())
+    final_col_map = {
+        "green": discord.Color.green(),
+        "gold": discord.Color.gold(),
+        "blue": discord.Color.blue(),
+        "red": discord.Color.red(),
+        "purple": discord.Color.purple()
+    }
+    end_embed_color = final_col_map.get(end_color.lower(), discord.Color.green())
+
+    win_embed = discord.Embed(title="🎉 GIVEAWAY ENDED 🎉", color=end_embed_color)
     win_embed.add_field(name="🎁 Prize", value=f"**{prize}**", inline=False)
     win_embed.add_field(name="🏆 Winner(s)", value=winner_mentions, inline=False)
+    if image:
+        win_embed.set_image(url=image)
+
     await updated_msg.edit(embed=win_embed)
-    await interaction.channel.send(f"🎊 Congratulations {winner_mentions}! You won **{prize}**!")
+    await target_channel.send(f"🎊 Congratulations {winner_mentions}! You won **{prize}**!")
 
-@bot.tree.command(name="greroll", description="Reroll giveaway")
-@app_commands.checks.has_permissions(manage_events=True)
-async def greroll(interaction: discord.Interaction, message_id: str):
-    await interaction.response.defer()
-    try:
-        msg = await interaction.channel.fetch_message(int(message_id))
-    except:
-        await interaction.followup.send("❌ Message not found.", ephemeral=True)
-        return
+    if giveaway_winners_dm_message:
+        for w_user in winning_users:
+            try:
+                await w_user.send(f"🎉 You won **{prize}**!\n\n{giveaway_winners_dm_message}")
+            except:
+                pass
 
-    reaction = discord.utils.get(msg.reactions, emoji="🎉")
-    if not reaction:
-        await interaction.followup.send("❌ No reactions found.", ephemeral=True)
-        return
-
-    raw_users = [user async for user in reaction.users() if not user.bot]
-    if not raw_users:
-        await interaction.followup.send("❌ No entries.", ephemeral=True)
-        return
-
-    new_winner = random.choice(raw_users)
-    await interaction.followup.send(f"🎉 New Winner: {new_winner.mention}!")
-
-@bot.tree.command(name="gstop", description="Stop giveaway")
-@app_commands.checks.has_permissions(manage_events=True)
-async def gstop(interaction: discord.Interaction, message_id: str):
-    await interaction.response.defer()
-    try:
-        msg = await interaction.channel.fetch_message(int(message_id))
-        cancel_embed = discord.Embed(title="🛑 GIVEAWAY CANCELED", color=discord.Color.red())
-        await msg.edit(embed=cancel_embed)
-        await interaction.followup.send("✅ Giveaway canceled.", ephemeral=True)
-    except:
-        await interaction.followup.send("❌ Message not found.", ephemeral=True)
-        # ==================== CONFIG & EVENTS ====================
+bot.tree.add_command(giveaway_group)
+# ==================== CONFIG & EVENTS ====================
 
 @bot.tree.command(name="setinvitracker", description="Set invite channel")
 @app_commands.checks.has_permissions(manage_channels=True)
@@ -297,16 +362,6 @@ async def setinvitracker(interaction: discord.Interaction, channel: discord.Text
     save_json(CONFIG_FILE, data)
     await interaction.response.send_message(f"✅ Invite channel set to {channel.mention}", ephemeral=True)
 
-@bot.tree.command(name="removeinvitracker", description="Disable invites")
-@app_commands.checks.has_permissions(manage_channels=True)
-async def removeinvitracker(interaction: discord.Interaction):
-    data = load_json(CONFIG_FILE)
-    gid = str(interaction.guild_id)
-    if gid in data and "invite_channel" in data[gid]:
-        del data[gid]["invite_channel"]
-        save_json(CONFIG_FILE, data)
-    await interaction.response.send_message("✅ Invite tracking disabled.", ephemeral=True)
-
 @bot.tree.command(name="setwelcome", description="Set welcome channel")
 @app_commands.checks.has_permissions(manage_channels=True)
 async def setwelcome(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -316,16 +371,6 @@ async def setwelcome(interaction: discord.Interaction, channel: discord.TextChan
     data[gid]["welcome_channel"] = channel.id
     save_json(CONFIG_FILE, data)
     await interaction.response.send_message(f"✅ Welcome channel set to {channel.mention}", ephemeral=True)
-
-@bot.tree.command(name="removewelcome", description="Disable welcome")
-@app_commands.checks.has_permissions(manage_channels=True)
-async def removewelcome(interaction: discord.Interaction):
-    data = load_json(CONFIG_FILE)
-    gid = str(interaction.guild_id)
-    if gid in data and "welcome_channel" in data[gid]:
-        del data[gid]["welcome_channel"]
-        save_json(CONFIG_FILE, data)
-    await interaction.response.send_message("✅ Welcome disabled.", ephemeral=True)
 
 @bot.tree.command(name="setleave", description="Set leave channel")
 @app_commands.checks.has_permissions(manage_channels=True)
@@ -337,26 +382,6 @@ async def setleave(interaction: discord.Interaction, channel: discord.TextChanne
     save_json(CONFIG_FILE, data)
     await interaction.response.send_message(f"✅ Leave channel set to {channel.mention}", ephemeral=True)
 
-@bot.tree.command(name="removeleave", description="Disable leave")
-@app_commands.checks.has_permissions(manage_channels=True)
-async def removeleave(interaction: discord.Interaction):
-    data = load_json(CONFIG_FILE)
-    gid = str(interaction.guild_id)
-    if gid in data and "leave_channel" in data[gid]:
-        del data[gid]["leave_channel"]
-        save_json(CONFIG_FILE, data)
-    await interaction.response.send_message("✅ Leave disabled.", ephemeral=True)
-
-@bot.tree.command(name="setlevel", description="Set level channel")
-@app_commands.checks.has_permissions(manage_channels=True)
-async def setlevel(interaction: discord.Interaction, channel: discord.TextChannel):
-    data = load_json(CONFIG_FILE)
-    gid = str(interaction.guild_id)
-    if gid not in data: data[gid] = {}
-    data[gid]["level_channel"] = channel.id
-    save_json(CONFIG_FILE, data)
-    await interaction.response.send_message(f"✅ Level channel set to {channel.mention}", ephemeral=True)
-
 @bot.tree.command(name="enablelevels", description="Enable levels")
 @app_commands.checks.has_permissions(manage_channels=True)
 async def enablelevels(interaction: discord.Interaction):
@@ -367,16 +392,6 @@ async def enablelevels(interaction: discord.Interaction):
     save_json(CONFIG_FILE, data)
     await interaction.response.send_message("✅ Levels enabled!", ephemeral=True)
 
-@bot.tree.command(name="disablelevels", description="Disable levels")
-@app_commands.checks.has_permissions(manage_channels=True)
-async def disablelevels(interaction: discord.Interaction):
-    data = load_json(CONFIG_FILE)
-    gid = str(interaction.guild_id)
-    if gid in data:
-        data[gid]["levels_enabled"] = False
-        save_json(CONFIG_FILE, data)
-    await interaction.response.send_message("❌ Levels disabled.", ephemeral=True)
-
 @bot.event
 async def on_member_join(member: discord.Member):
     data = load_json(CONFIG_FILE)
@@ -385,21 +400,6 @@ async def on_member_join(member: discord.Member):
         ch = member.guild.get_channel(data[gid]["welcome_channel"])
         if ch: 
             await ch.send(f"👋 Welcome {member.mention}!")
-
-    if gid in data and "invite_channel" in data[gid]:
-        ch = member.guild.get_channel(data[gid]["invite_channel"])
-        if ch:
-            cached = INVITES_CACHE.get(member.guild.id, {})
-            try:
-                new_invs = await member.guild.invites()
-                used = next((i for i in new_invs if i.code in cached and i.uses > cached[i.code]), None)
-                INVITES_CACHE[member.guild.id] = {i.code: i.uses for i in new_invs}
-                if used and used.inviter: 
-                    await ch.send(f"📩 {member.mention} invited by **{used.inviter.mention}**.")
-                else: 
-                    await ch.send(f"📩 {member.mention} joined.")
-            except: 
-                pass
 
 @bot.event
 async def on_member_remove(member: discord.Member):
@@ -484,23 +484,9 @@ async def ban(interaction: discord.Interaction, member: discord.Member, reason: 
 async def timeout(interaction: discord.Interaction, member: discord.Member, duration: int, unit: str, reason: str = "No reason"):
     await interaction.response.defer()
     u = unit.lower().strip()
-    if u in ["d", "days"]:
-        sec = duration * 86400
-    elif u in ["h", "hours"]:
-        sec = duration * 3600
-    elif u in ["m", "minutes"]:
-        sec = duration * 60
-    else:
-        sec = duration
+    sec = duration * 86400 if u in ["d", "days"] else duration * 3600 if u in ["h", "hours"] else duration * 60 if u in ["m", "minutes"] else duration
     await member.timeout(datetime.timedelta(seconds=sec), reason=reason)
     await interaction.followup.send(f"🔇 Timed out {member.mention}.")
-
-@bot.tree.command(name="untimeout", description="Remove timeout")
-@app_commands.checks.has_permissions(moderate_members=True)
-async def untimeout(interaction: discord.Interaction, member: discord.Member):
-    await interaction.response.defer()
-    await member.timeout(None)
-    await interaction.followup.send(f"🔊 Timeout removed for {member.mention}.")
 
 @bot.tree.command(name="warn", description="Warn member")
 @app_commands.checks.has_permissions(moderate_members=True)
@@ -511,6 +497,88 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     except: 
         pass
     await interaction.followup.send(f"⚠️ Warned {member.mention}.")
+
+# ==================== AUTOMOD & ANTISPAM ====================
+
+automod_group = app_commands.Group(name="automod", description="Automod management")
+
+@automod_group.command(name="words", description="Manage blocked words")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def automod_words(interaction: discord.Interaction, action: str, word: str = None):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    if "automod_words" not in data[gid]: data[gid]["automod_words"] = []
+    act = action.lower()
+    if act == "add" and word:
+        if word.lower() not in data[gid]["automod_words"]:
+            data[gid]["automod_words"].append(word.lower())
+            save_json(CONFIG_FILE, data)
+        await interaction.response.send_message(f"✅ Added blocked word: `{word}`", ephemeral=True)
+    elif act == "remove" and word:
+        if word.lower() in data[gid]["automod_words"]:
+            data[gid]["automod_words"].remove(word.lower())
+            save_json(CONFIG_FILE, data)
+        await interaction.response.send_message(f"✅ Removed blocked word: `{word}`", ephemeral=True)
+    elif act == "list":
+        words = data[gid]["automod_words"]
+        await interaction.response.send_message(f"📜 Blocked words: {', '.join(words) if words else 'None'}", ephemeral=True)
+
+@automod_group.command(name="invites", description="Toggle invite link deletion")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def automod_invites(interaction: discord.Interaction, enabled: bool):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    data[gid]["automod_invites"] = enabled
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"✅ Automod invites set to: `{enabled}`", ephemeral=True)
+
+@automod_group.command(name="links", description="Toggle link deletion")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def automod_links(interaction: discord.Interaction, enabled: bool):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    data[gid]["automod_links"] = enabled
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"✅ Automod links set to: `{enabled}`", ephemeral=True)
+
+@automod_group.command(name="punish", description="Set action after strikes")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def automod_punish(interaction: discord.Interaction, action: str):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    data[gid]["automod_punishment"] = action.lower()
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message(f"✅ Automod punishment set to: `{action}`", ephemeral=True)
+
+bot.tree.add_command(automod_group)
+
+antispam_group = app_commands.Group(name="antispam", description="Antispam management")
+
+@antispam_group.command(name="on", description="Turn anti-spam on")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def antispam_on(interaction: discord.Interaction):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    data[gid]["antispam_enabled"] = True
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message("✅ Anti-spam enabled.", ephemeral=True)
+
+@antispam_group.command(name="off", description="Turn anti-spam off")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def antispam_off(interaction: discord.Interaction):
+    data = load_json(CONFIG_FILE)
+    gid = str(interaction.guild_id)
+    if gid not in data: data[gid] = {}
+    data[gid]["antispam_enabled"] = False
+    save_json(CONFIG_FILE, data)
+    await interaction.response.send_message("❌ Anti-spam disabled.", ephemeral=True)
+
+bot.tree.add_command(antispam_group)
 
 token = os.environ.get("DISCORD_TOKEN")
 if token: 
