@@ -106,7 +106,7 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
     await member.kick(reason=reason)
     await interaction.response.send_message(f"👢 Successfully kicked **{member}**. Reason: {reason}")
 
-# 5. Timeout
+# 5. Timeout (Fixed for timezone awareness)
 @bot.tree.command(name="timeout", description="Timeouts a user (e.g., 30s, 15m, 2h, 1d).")
 @app_commands.checks.has_permissions(moderate_members=True)
 async def timeout(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str = "No reason provided"):
@@ -114,10 +114,12 @@ async def timeout(interaction: discord.Interaction, member: discord.Member, dura
     if not delta:
         await interaction.response.send_message("❌ Invalid format! Use a number followed by s, m, h, or d (e.g., `10m`, `2h`).", ephemeral=True)
         return
-    until = datetime.datetime.utcnow() + delta
+    
+    # Use timezone-aware UTC time
+    until = discord.utils.utcnow() + delta
     await member.timeout(until, reason=reason)
     await interaction.response.send_message(f"🔇 Timed out **{member}** for **{duration}**. Reason: {reason}")
-
+    
 # 6. Untimeout
 @bot.tree.command(name="untimeout", description="Removes a timeout from a user early.")
 @app_commands.checks.has_permissions(moderate_members=True)
