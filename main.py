@@ -537,6 +537,116 @@ async def invite_bonus(interaction: discord.Interaction, member: discord.Member,
 @app_commands.checks.has_permissions(manage_guild=True)
 async def invite_reset(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message(f"🔄 Reset invite tracking stats for {member.mention}.", ephemeral=True)
+    # ==============================================================================
+# CATEGORY 4: SERVER UTILITY & INFORMATION
+# ==============================================================================
+
+@bot.tree.command(name="userinfo", description="Display detailed information about a member")
+async def userinfo(interaction: discord.Interaction, member: discord.Member = None):
+    target = member or interaction.user
+    roles = [role.mention for role in target.roles if role != interaction.guild.default_role]
+    roles_str = ", ".join(roles) if roles else "None"
+    
+    embed = discord.Embed(title=f"👤 User Info — {target.name}", color=target.color)
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(name="Identifier", value=f"`{target.id}`", inline=True)
+    embed.add_field(name="Nickname", value=f"`{target.nick or 'None'}`", inline=True)
+    embed.add_field(name="Bot Account", value=f"`{target.bot}`", inline=True)
+    embed.add_field(name="Account Created", value=f"<t:{int(target.created_at.timestamp())}:R>", inline=True)
+    embed.add_field(name="Joined Server", value=f"<t:{int(target.joined_at.timestamp())}:R>", inline=True)
+    embed.add_field(name="Highest Role", value=target.top_role.mention, inline=True)
+    embed.add_field(name=f"Roles [{len(roles)}]", value=roles_str, inline=False)
+    
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="serverinfo", description="Show comprehensive server details and statistics")
+async def serverinfo(interaction: discord.Interaction):
+    guild = interaction.guild
+    embed = discord.Embed(title=f"🏰 {guild.name} — Server Overview", color=discord.Color.blue())
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+        
+    embed.add_field(name="Server ID", value=f"`{guild.id}`", inline=True)
+    embed.add_field(name="Owner", value=f"<@{guild.owner_id}>", inline=True)
+    embed.add_field(name="Created On", value=f"<t:{int(guild.created_at.timestamp())}:D>", inline=True)
+    embed.add_field(name="Total Members", value=f"👥 **{guild.member_count}**", inline=True)
+    embed.add_field(name="Text Channels", value=f"💬 **{len(guild.text_channels)}**", inline=True)
+    embed.add_field(name="Voice Channels", value=f"🔊 **{len(guild.voice_channels)}**", inline=True)
+    embed.add_field(name="Boost Level", value=f"🚀 **Level {guild.premium_tier}**", inline=True)
+    embed.add_field(name="Boost Count", value=f"✨ **{guild.premium_subscription_count}** Boosts", inline=True)
+    embed.add_field(name="Roles Count", value=f"🎭 **{len(guild.roles)}** Roles", inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="avatar", description="Get a high-resolution view of a user's avatar")
+async def avatar(interaction: discord.Interaction, member: discord.Member = None):
+    target = member or interaction.user
+    embed = discord.Embed(title=f"🖼️ {target.name}'s Avatar", color=discord.Color.purple())
+    embed.set_image(url=target.display_avatar.url)
+    embed.add_field(name="Download Links", value=f"[PNG]({target.display_avatar.with_format('png').url}) | [JPG]({target.display_avatar.with_format('jpg').url}) | [WEBP]({target.display_avatar.with_format('webp').url})")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="poll", description="Create a clean, interactive poll with reaction options")
+async def poll(interaction: discord.Interaction, question: str, option1: str, option2: str, option3: str = None, option4: str = None):
+    options = [option1, option2]
+    if option3: options.append(option3)
+    if option4: options.append(option4)
+    
+    emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+    desc = ""
+    for i, opt in enumerate(options):
+        desc += f"{emojis[i]} **{opt}**\n\n"
+        
+    embed = discord.Embed(title=f"📊 Poll: {question}", description=desc, color=discord.Color.gold())
+    embed.set_footer(text=f"Poll created by {interaction.user.name}", icon_url=interaction.user.display_avatar.url)
+    
+    await interaction.response.send_message(embed=embed)
+    msg = await interaction.original_response()
+    
+    for i in range(len(options)):
+        await msg.add_reaction(emojis[i])
+
+
+# ==============================================================================
+# CATEGORY 6: ADVANCED INVITE TRACKING SYSTEM
+# ==============================================================================
+
+# Slash Command: /invites
+@bot.tree.command(name="invites", description="Check detailed invite statistics for a user")
+async def invites_cmd(interaction: discord.Interaction, member: discord.Member = None):
+    target = member or interaction.user
+    
+    regular, left, fake, bonus = 0, 0, 0, 0
+    total = max(0, regular + bonus - left - fake)
+    
+    embed = discord.Embed(
+        title=f"📥 Invite Statistics — {target.name}",
+        description=f"Showing full invite history and status metrics for {target.mention}.",
+        color=discord.Color.from_rgb(88, 101, 242)
+    )
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(name="✨ Total Invites", value=f"```yaml\n{total} Invites\n```", inline=False)
+    embed.add_field(name="✅ Regular", value=f"**{regular}**", inline=True)
+    embed.add_field(name="❌ Left", value=f"**{left}**", inline=True)
+    embed.add_field(name="🤖 Fake / Alts", value=f"**{fake}**", inline=True)
+    embed.add_field(name="🎁 Bonus", value=f"**{bonus}**", inline=True)
+    
+    progress_bar = "🟦" * min(total, 10) + "⬛" * (10 - min(total, 10))
+    embed.add_field(name="📈 Milestone Progress", value=f"{progress_bar} (`{total}/10`)", inline=False)
+    embed.set_footer(text=f"Requested by {interaction.user.name} • Laufey Invite Manager", icon_url=interaction.user.display_avatar.url)
+    
+    await interaction.response.send_message(embed=embed)
+
+
+# Prefix Command: !invites or !invites @user
+@bot.command(name="invites")
+async def invites_prefix(ctx, member: discord.Member = None):
+    target = member or ctx.author
+    
+    regular,
 # ==================== BOT EXECUTION ====================
 token = os.environ.get("DISCORD_TOKEN")
 if token:
