@@ -654,11 +654,11 @@ async def messages_cmd(interaction: discord.Interaction, member: discord.Member 
     embed.add_field(name="⭐ Level", value=str(user_data["level"]), inline=True)
     embed.add_field(name="✨ XP", value=str(user_data["xp"]), inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
-    # ==================== ADVANCED TICKETS, MOD & CONFIGS ====================
+    # ==================== ADVANCED TICKETS ====================
 
 ticket_group = app_commands.Group(name="ticket", description="Complete ticket management system")
 
-@ticket_group.command(name="setup", description="Set the staff role (and optional category) and post the ticket panel")
+@ticket_group.command(name="setup", description="Set the staff role and optional category")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def ticket_setup(interaction: discord.Interaction, staff_role: discord.Role, category: discord.CategoryChannel = None):
     data = load_json(CONFIG_FILE)
@@ -710,7 +710,7 @@ async def ticket_add(interaction: discord.Interaction, name: str, emoji: str = "
     save_json(CONFIG_FILE, data)
     await interaction.response.send_message(f"✅ Added department: {emoji} {name}", ephemeral=True)
 
-@ticket_group.command(name="edit", description="Change a department's name, emoji, description")
+@ticket_group.command(name="edit", description="Change a department's name or emoji")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def ticket_edit(interaction: discord.Interaction, index: int, new_name: str):
     data = load_json(CONFIG_FILE)
@@ -723,7 +723,7 @@ async def ticket_edit(interaction: discord.Interaction, index: int, new_name: st
     else:
         await interaction.response.send_message("❌ Invalid department index.", ephemeral=True)
 
-@ticket_group.command(name="remove", description="Remove a department by number or name")
+@ticket_group.command(name="remove", description="Remove a department by number")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def ticket_remove(interaction: discord.Interaction, index: int):
     data = load_json(CONFIG_FILE)
@@ -736,7 +736,7 @@ async def ticket_remove(interaction: discord.Interaction, index: int):
     else:
         await interaction.response.send_message("❌ Invalid department number.", ephemeral=True)
 
-@ticket_group.command(name="list", description="Show all departments and the current ticket setup")
+@ticket_group.command(name="list", description="Show all configured departments")
 async def ticket_list(interaction: discord.Interaction):
     data = load_json(CONFIG_FILE)
     gid = str(interaction.guild_id)
@@ -748,12 +748,11 @@ async def ticket_list(interaction: discord.Interaction):
     embed = discord.Embed(title="🎟️ Ticket Departments", description=desc, color=discord.Color.blue())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# Ticket Panel Button View
 class TicketPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Create Ticket", style=discord.ButtonStyle.green, custom_id="open_ticket_general", emoji="🎫")
+    @discord.ui.button(label="Create Ticket", style=discord.ButtonStyle.green, custom_id="open_ticket_btn", emoji="🎫")
     async def create_ticket_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
         data = load_json(CONFIG_FILE)
@@ -764,11 +763,12 @@ class TicketPanelView(discord.ui.View):
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
         if staff_role_id:
             staff_role = guild.get_role(staff_role_id)
-            if staff_role: overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            if staff_role:
+                overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
         ticket_channel = await guild.create_text_channel(
             name=f"ticket-{interaction.user.name}",
@@ -860,8 +860,9 @@ async def messages_cmd(interaction: discord.Interaction, member: discord.Member 
     embed.add_field(name="⭐ Level", value=str(user_data["level"]), inline=True)
     embed.add_field(name="✨ XP", value=str(user_data["xp"]), inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
 token = os.environ.get("DISCORD_TOKEN")
-if token: 
+if token:
     bot.run(token)
-else: 
+else:
     print("❌ Missing DISCORD_TOKEN!")
