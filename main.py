@@ -94,8 +94,8 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
     await member.kick(reason=reason)
     await interaction.response.send_message(f"👢 Successfully kicked **{member}**. Reason: {reason}")
 
-# 5. Timeout (Clickable Dropdown Units)
-@bot.tree.command(name="timeout", description="Timeouts a user with clickable units.")
+# 5. Timeout (Separate number + clickable unit dropdown boxes)
+@bot.tree.command(name="timeout", description="Timeouts a user with separate amount and unit selections.")
 @app_commands.choices(unit=[
     app_commands.Choice(name="Seconds", value="s"),
     app_commands.Choice(name="Minutes", value="m"),
@@ -106,13 +106,13 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
 ])
 @app_commands.checks.has_permissions(moderate_members=True)
 async def timeout(interaction: discord.Interaction, member: discord.Member, amount: int, unit: app_commands.Choice[str], reason: str = "No reason provided"):
-    seconds_multiplier = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "mo": 2592000}
-    total_seconds = amount * seconds_multiplier.get(unit.value, 1)
+    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "mo": 2592000}
+    total_seconds = amount * multipliers.get(unit.value, 1)
     
     delta = datetime.timedelta(seconds=total_seconds)
     until = discord.utils.utcnow() + delta
     await member.timeout(until, reason=reason)
-    await interaction.response.send_message(f"🔇 Timed out **{member}** for {amount} {unit.name}. Reason: {reason}")
+    await interaction.response.send_message(f"🔇 Timed out **{member}** for **{amount} {unit.name}**. Reason: {reason}")
 
 # 6. Untimeout
 @bot.tree.command(name="untimeout", description="Removes a timeout from a user early.")
@@ -237,7 +237,7 @@ async def userinfo(interaction: discord.Interaction, member: discord.Member = No
     
     await interaction.response.send_message(embed=embed)
 
-# 17. Serverinfo (Formatted exactly like your reference image)[span_1](start_span)[span_1](end_span)
+# 17. Serverinfo (Cleaned and fully fixed)
 @bot.tree.command(name="serverinfo", description="Displays detailed server information.")
 async def serverinfo(interaction: discord.Interaction):
     guild = interaction.guild
@@ -252,7 +252,7 @@ async def serverinfo(interaction: discord.Interaction):
     if guild.icon:
         embed.set_thumbnail(url=guild.icon.url)
         
-    embed.description = guild.description if guild.description else "No description set.[span_2](start_span)"[span_2](end_span)
+    embed.description = guild.description if guild.description else "No description set."
     
     embed.add_field(
         name="📜 General Info",
