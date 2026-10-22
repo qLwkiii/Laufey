@@ -3,6 +3,7 @@ import json
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import datetime
+import re
 
 import discord
 from discord import app_commands
@@ -56,6 +57,18 @@ async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     print("Ready and synced public slash commands!")
 
+def parse_time_duration(time_str: str) -> datetime.timedelta:
+    match = re.match(r"^(\d+)([smhdw]|mo)$", time_str.lower())
+    if not match:
+        return None
+    value, unit = int(match.group(1)), match.group(2)
+    if unit == 's': return datetime.timedelta(seconds=value)
+    if unit == 'm': return datetime.timedelta(minutes=value)
+    if unit == 'h': return datetime.timedelta(hours=value)
+    if unit == 'd': return datetime.timedelta(days=value)
+    if unit == 'w': return datetime.timedelta(weeks=value)
+    if unit == 'mo': return datetime.timedelta(days=value * 30)
+    return None
 
 # ==========================================
 # ALL 18 MODERATION & UTILITY COMMANDS (PUBLIC)
@@ -94,25 +107,18 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
     await member.kick(reason=reason)
     await interaction.response.send_message(f"👢 Successfully kicked **{member}**. Reason: {reason}")
 
-# 5. Timeout (Separate number + clickable unit dropdown boxes)
-@bot.tree.command(name="timeout", description="Timeouts a user with separate amount and unit selections.")
-@app_commands.choices(unit=[
-    app_commands.Choice(name="Seconds", value="s"),
-    app_commands.Choice(name="Minutes", value="m"),
-    app_commands.Choice(name="Hours", value="h"),
-    app_commands.Choice(name="Days", value="d"),
-    app_commands.Choice(name="Weeks", value="w"),
-    app_commands.Choice(name="Months", value="mo")
-])
+# 5. Timeout (With clear examples in description)
+@bot.tree.command(name="timeout", description="Timeouts a user (e.g., 30s, 15m, 2h, 1d, 1w).")
 @app_commands.checks.has_permissions(moderate_members=True)
-async def timeout(interaction: discord.Interaction, member: discord.Member, amount: int, unit: app_commands.Choice[str], reason: str = "No reason provided"):
-    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "mo": 2592000}
-    total_seconds = amount * multipliers.get(unit.value, 1)
+async def timeout(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str = "No reason provided"):
+    delta = parse_time_duration(duration)
+    if not delta:
+        await interaction.response.send_message("❌ Invalid format! Use examples like: `30s`, `15m`, `2h`, `1d`, `1w`.")
+        return
     
-    delta = datetime.timedelta(seconds=total_seconds)
     until = discord.utils.utcnow() + delta
     await member.timeout(until, reason=reason)
-    await interaction.response.send_message(f"🔇 Timed out **{member}** for **{amount} {unit.name}**. Reason: {reason}")
+    await interaction.response.send_message(f"🔇 Timed out **{member}** for **{duration}**. Reason: {reason}")
 
 # 6. Untimeout
 @bot.tree.command(name="untimeout", description="Removes a timeout from a user early.")
@@ -237,7 +243,7 @@ async def userinfo(interaction: discord.Interaction, member: discord.Member = No
     
     await interaction.response.send_message(embed=embed)
 
-# 17. Serverinfo (Cleaned and fully fixed)
+# 17. Serverinfo
 @bot.tree.command(name="serverinfo", description="Displays detailed server information.")
 async def serverinfo(interaction: discord.Interaction):
     guild = interaction.guild
