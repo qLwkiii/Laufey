@@ -94,11 +94,11 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
     await member.kick(reason=reason)
     await interaction.response.send_message(f"👢 Successfully kicked **{member}**. Reason: {reason}")
 
-# 5. Timeout (Fixed choice dropdown handling)
+# 5. Timeout (With Discord's 28-day limit protection)
 @bot.tree.command(name="timeout", description="Timeouts a user with separate amount and unit selections.")
 @app_commands.describe(
     amount="Enter number (e.g., 30, 10, 2)",
-    unit="Select time unit (Seconds, Minutes, Hours, Days)",
+    unit="Select time unit (Seconds, Minutes, Hours, Days, Weeks)",
     reason="Reason for timeout"
 )
 @app_commands.choices(unit=[
@@ -113,6 +113,11 @@ async def timeout(interaction: discord.Interaction, member: discord.Member, amou
     multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
     total_seconds = amount * multipliers.get(unit.value, 1)
     
+    # Discord enforces a strict maximum timeout limit of 28 days (2,419,200 seconds)
+    if total_seconds > 2419200:
+        await interaction.response.send_message("❌ Discord allows a maximum timeout duration of **28 days**. Please choose a shorter time.")
+        return
+
     delta = datetime.timedelta(seconds=total_seconds)
     until = discord.utils.utcnow() + delta
     await member.timeout(until, reason=reason)
