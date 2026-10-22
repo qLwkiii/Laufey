@@ -3,7 +3,6 @@ import json
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import datetime
-import re
 
 import discord
 from discord import app_commands
@@ -21,7 +20,6 @@ class SimpleHandler(BaseHTTPRequestHandler):
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(('0.0.0.0', port), SimpleHandler)
-    print(f"Web server running on port {port}")
     server.serve_forever()
 
 threading.Thread(target=run_web_server, daemon=True).start()
@@ -56,21 +54,11 @@ warning_database = load_warnings()
 async def on_ready():
     await bot.tree.sync()
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-    print("Ready and synced slash commands!")
+    print("Ready and synced public slash commands!")
 
-def parse_time_duration(time_str: str) -> datetime.timedelta:
-    match = re.match(r"^(\d+)([smhd])$", time_str.lower())
-    if not match:
-        return None
-    value, unit = int(match.group(1)), match.group(2)
-    if unit == 's': return datetime.timedelta(seconds=value)
-    if unit == 'm': return datetime.timedelta(minutes=value)
-    if unit == 'h': return datetime.timedelta(hours=value)
-    if unit == 'd': return datetime.timedelta(days=value)
-    return None
 
 # ==========================================
-# ALL 18 MODERATION & UTILITY COMMANDS
+# ALL 18 MODERATION & UTILITY COMMANDS (PUBLIC)
 # ==========================================
 
 # 1. Ban
@@ -89,7 +77,7 @@ async def unban(interaction: discord.Interaction, user_id: str, reason: str = "N
         await interaction.guild.unban(user, reason=reason)
         await interaction.response.send_message(f"✅ Successfully unbanned **{user}**. Reason: {reason}")
     except Exception as e:
-        await interaction.response.send_message(f"❌ Failed to unban. Check if the User ID is valid. Error: {e}", ephemeral=True)
+        await interaction.response.send_message(f"❌ Failed to unban. Check if the User ID is valid. Error: {e}")
 
 # 3. Softban
 @bot.tree.command(name="softban", description="Bans and unbans a user to clear their recent messages.")
@@ -106,20 +94,26 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
     await member.kick(reason=reason)
     await interaction.response.send_message(f"👢 Successfully kicked **{member}**. Reason: {reason}")
 
-# 5. Timeout (Fixed for timezone awareness)
-@bot.tree.command(name="timeout", description="Timeouts a user (e.g., 30s, 15m, 2h, 1d).")
+# 5. Timeout (Clickable Dropdown Units)
+@bot.tree.command(name="timeout", description="Timeouts a user with clickable units.")
+@app_commands.choices(unit=[
+    app_commands.Choice(name="Seconds", value="s"),
+    app_commands.Choice(name="Minutes", value="m"),
+    app_commands.Choice(name="Hours", value="h"),
+    app_commands.Choice(name="Days", value="d"),
+    app_commands.Choice(name="Weeks", value="w"),
+    app_commands.Choice(name="Months", value="mo")
+])
 @app_commands.checks.has_permissions(moderate_members=True)
-async def timeout(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str = "No reason provided"):
-    delta = parse_time_duration(duration)
-    if not delta:
-        await interaction.response.send_message("❌ Invalid format! Use a number followed by s, m, h, or d (e.g., `10m`, `2h`).", ephemeral=True)
-        return
+async def timeout(interaction: discord.Interaction, member: discord.Member, amount: int, unit: app_commands.Choice[str], reason: str = "No reason provided"):
+    seconds_multiplier = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "mo": 2592000}
+    total_seconds = amount * seconds_multiplier.get(unit.value, 1)
     
-    # Use timezone-aware UTC time
+    delta = datetime.timedelta(seconds=total_seconds)
     until = discord.utils.utcnow() + delta
     await member.timeout(until, reason=reason)
-    await interaction.response.send_message(f"🔇 Timed out **{member}** for **{duration}**. Reason: {reason}")
-    
+    await interaction.response.send_message(f"🔇 Timed out **{member}** for {amount} {unit.name}. Reason: {reason}")
+
 # 6. Untimeout
 @bot.tree.command(name="untimeout", description="Removes a timeout from a user early.")
 @app_commands.checks.has_permissions(moderate_members=True)
@@ -144,12 +138,12 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
 async def warnings(interaction: discord.Interaction, member: discord.Member):
     user_id = str(member.id)
     if user_id not in warning_database or not warning_database[user_id]:
-        await interaction.response.send_message(f"ℹ️ **{member}** has no active warnings.", ephemeral=True)
+        await interaction.response.send_message(f"ℹ️ **{member}** has no active warnings.")
         return
     
     reasons = "\n".join([f"**#{i+1}**: {r}" for i, r in enumerate(warning_database[user_id])])
     embed = discord.Embed(title=f"Warnings for {member}", description=reasons, color=discord.Color.orange())
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 # 9. Delwarn
 @bot.tree.command(name="delwarn", description="Deletes a specific warning number from a user's record.")
@@ -161,7 +155,7 @@ async def delwarn(interaction: discord.Interaction, member: discord.Member, warn
         save_warnings(warning_database)
         await interaction.response.send_message(f"🗑️ Removed warning #{warn_index} (`{removed}`) for **{member}**.")
     else:
-        await interaction.response.send_message("❌ Invalid warning number or user has no warnings.", ephemeral=True)
+        await interaction.response.send_message("❌ Invalid warning number or user has no warnings.")
 
 # 10. Clearwarns
 @bot.tree.command(name="clearwarns", description="Clears all warning records for a user.")
@@ -173,7 +167,7 @@ async def clearwarns(interaction: discord.Interaction, member: discord.Member):
         save_warnings(warning_database)
         await interaction.response.send_message(f"🧹 Cleared all warnings for **{member}**.")
     else:
-        await interaction.response.send_message(f"ℹ️ **{member}** has no warnings to clear.", ephemeral=True)
+        await interaction.response.send_message(f"ℹ️ **{member}** has no warnings to clear.")
 
 # 11. Lock
 @bot.tree.command(name="lock", description="Locks the current channel so members cannot send messages.")
@@ -190,17 +184,23 @@ async def unlock(interaction: discord.Interaction):
     await interaction.response.send_message("🔓 Channel has been unlocked.")
 
 # 13. Purge
-@bot.tree.command(name="purge", description="Deletes a specific number of messages, optionally filtered by user.")
+@bot.tree.command(name="purge", description="Deletes an exact number of messages, optionally filtered by user.")
 @app_commands.checks.has_permissions(manage_messages=True)
 async def purge(interaction: discord.Interaction, amount: int, member: discord.Member = None):
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer()
     if member:
-        def check(m): return m.author == member
-        deleted = await interaction.channel.purge(limit=amount, check=check)
-        await interaction.followup.send(f"🗑️ Deleted {len(deleted)} messages from **{member}**.", ephemeral=True)
+        deleted = []
+        async for msg in interaction.channel.history(limit=200):
+            if msg.author == member:
+                deleted.append(msg)
+                if len(deleted) == amount:
+                    break
+        if deleted:
+            await interaction.channel.delete_messages(deleted)
+        await interaction.followup.send(f"🗑️ Successfully deleted {len(deleted)} messages from **{member}**.")
     else:
         deleted = await interaction.channel.purge(limit=amount)
-        await interaction.followup.send(f"🗑️ Successfully deleted {len(deleted)} messages.", ephemeral=True)
+        await interaction.followup.send(f"🗑️ Successfully deleted {len(deleted)} messages.")
 
 # 14. Slowmode
 @bot.tree.command(name="slowmode", description="Sets a slowmode delay for the channel in seconds (0 to disable).")
@@ -237,33 +237,62 @@ async def userinfo(interaction: discord.Interaction, member: discord.Member = No
     
     await interaction.response.send_message(embed=embed)
 
-# 17. Serverinfo
-@bot.tree.command(name="serverinfo", description="Displays basic information about the server.")
+# 17. Serverinfo (Formatted exactly like your reference image)[span_1](start_span)[span_1](end_span)
+@bot.tree.command(name="serverinfo", description="Displays detailed server information.")
 async def serverinfo(interaction: discord.Interaction):
     guild = interaction.guild
-    embed = discord.Embed(title=f"Server Info: {guild.name}", color=discord.Color.blue())
-    embed.add_field(name="Owner", value=guild.owner, inline=True)
-    embed.add_field(name="Members", value=guild.member_count, inline=True)
-    embed.add_field(name="Created On", value=guild.created_at.strftime("%Y-%m-%d"), inline=True)
+    
+    text_channels = len(guild.text_channels)
+    voice_channels = len(guild.voice_channels)
+    categories = len(guild.categories)
+    
+    created_str = guild.created_at.strftime("%B %d, %Y %I:%M %p")
+    
+    embed = discord.Embed(title="📊 Server Information", color=discord.Color.from_rgb(40, 160, 200))
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+        
+    embed.description = guild.description if guild.description else "No description set.[span_2](start_span)"[span_2](end_span)
+    
+    embed.add_field(
+        name="📜 General Info",
+        value=f"**Name:** {guild.name}\n**Server ID:** {guild.id}\n**Owner:** {guild.owner.mention}\n**Created:** {created_str}",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="👥 Members & Roles",
+        value=f"**Members:** {guild.member_count}\n**Roles:** {len(guild.roles)}\n**Verification Level:** {str(guild.verification_level).capitalize()}",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="💎 Boost Status",
+        value=f"**Level:** {guild.premium_tier}\n**Boosts:** {guild.premium_subscription_count}\n**AFK Timeout:** {guild.afk_timeout} sec",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📁 Channels",
+        value=f"**Text:** {text_channels}\n**Voice:** {voice_channels}\n**Categories:** {categories}",
+        inline=False
+    )
+    
     await interaction.response.send_message(embed=embed)
 
 # 18. Ping
 @bot.tree.command(name="ping", description="Checks the bot's latency.")
 async def ping(interaction: discord.Interaction):
     latency = round(bot.latency * 1000)
-    await interaction.response.send_message(f"pong! 🏓 Latency is `{latency}ms`.")
+    await interaction.response.send_message(f"Pong! 🏓 Latency is `{latency}ms`.")
 
 # Error handling
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message("❌ You do not have the required permissions to use this command.", ephemeral=True)
+        await interaction.response.send_message("❌ You do not have the required permissions to use this command.")
     else:
-        await interaction.response.send_message(f"❌ An error occurred: {error}", ephemeral=True)
+        await interaction.response.send_message(f"❌ An error occurred: {error}")
 
-# Run the bot securely via Render Environment Variables
-TOKEN = os.environ.get("DISCORD_TOKEN")
-if not TOKEN:
-    print("ERROR: DISCORD_TOKEN is missing!")
-else:
-    bot.run(TOKEN)
+# Run bot securely
+bot.run(os.environ.get("DISCORD_TOKEN"))
